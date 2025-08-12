@@ -1,0 +1,31 @@
+# 가상환경 / 캐시 / 출력물
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# 데이터/체크포인트/산출물
+data/
+raw data/
+output/
+checkpoints/
+checkpoints.json
+
+# 노트북 체크포인트/임시
+.ipynb_checkpoints/
+~$*.docx
+~$*.xlsx
+
+# OS/IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# 대용량 중간파일
+*.npy
+*.npz
+
+# 엑셀/CSV 결과물(원하면 주석 처리)
+*.xlsx
+*.csv

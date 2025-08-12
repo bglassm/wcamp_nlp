@@ -1,0 +1,31 @@
+﻿################ CORE ################
+numpy==1.26.4
+pandas==2.1.4
+scikit-learn==1.3.2
+
+############## CUDA TORCH ############
+torch==2.1.2+cu121
+torchvision==0.16.2+cu121
+
+############# NLP STACK ##############
+sentence-transformers==3.0.0
+transformers==4.40.2             # PyABSA 2.4.x 호환
+safetensors==0.5.3
+tqdm==4.67.1
+kiwipiepy==0.21.0
+
+######## DIM-RED & CLUSTER ###########
+umap-learn>=0.5.5
+hdbscan>=0.8.40
+
+############ TOPIC / KEYWORD #########
+bertopic[visualization]>=0.16
+keybert==0.9.0
+
+############ VIS / I/O ###############
+matplotlib==3.8.4
+openpyxl==3.1.2
+
+######### NEW DEPENDENCIES ###########
+kss>=3.5.0
+pyabsa>=2.4.1                    # ★ 업그레이드
