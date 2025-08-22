@@ -8,12 +8,7 @@ DATA_DIR   = BASE_DIR / "data"
 OUTPUT_DIR = BASE_DIR / "output"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-INPUT_FILES = [
-    DATA_DIR / "cucumber_market.xlsx",
-    DATA_DIR / "watermelon_market.xlsx",
-    DATA_DIR / "koreamelon_market.xlsx",
-    DATA_DIR / "abalone.xlsx",
-]
+INPUT_FILES = sorted(p for p in DATA_DIR.glob("*.xlsx") if not p.name.startswith("~$"))
 
 # ───────────────────────────────────────────────────────────────────────────
 # 1. Loader / Preprocess
