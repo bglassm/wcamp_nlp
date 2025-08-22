@@ -1,0 +1,8 @@
+refinement:
+  enabled: true
+  top_k_facets: 2
+  facet_threshold: 0.32          # 파셋 라우팅 임계치 (코사인 점수)
+  hetero_sil_threshold: 0.18     # 이질성 기준 (실루엣). 이 값 이상이면 로컬 분할 시도
+  min_cluster_size_for_split: 40 # 너무 작은 클러스터는 분할 안 함
+  max_local_k: 4
+  other_label_value: -1

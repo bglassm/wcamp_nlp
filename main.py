@@ -28,6 +28,9 @@ from pipeline.exporter import (
     save_clustered_clauses,
     save_clauses_summary_json,
 )
+from pipeline.refiner import load_facets_yml, refine_clusters
+from pipeline.idmap import assign_stable_ids
+from utils.runmeta import write_run_manifest, write_meta_json
 
 # ────────────────────────────────────────────────────────────────────────────
 # 로깅 & 경고 억제
@@ -73,13 +76,46 @@ def _relabel_dict(d: Dict[int, list], base: int) -> Dict[int, list]:
     return new_d
 
 # ────────────────────────────────────────────────────────────────────────────
-def run_full_pipeline(input_files: List[Path], output_dir: Path) -> None:
+def run_full_pipeline(input_files: List[Path], output_dir: Path, *, resume: bool = False) -> None:
     total = len(input_files)
     logging.info("▶ Starting full pipeline for %d files", total)
     timestamp = datetime.now().strftime("%y%m%d_%H%M%S")
 
-    # 폴라리티 → 오프셋 베이스
+    # 폴라리티 → 오프셋 베이스 (기존 규칙 유지)
     base_map = {"negative": 0, "neutral": 1000, "positive": 2000}
+
+    # ── Refinement 준비 (옵션) ──
+    refine_enabled = getattr(config, "REFINEMENT_ENABLED", True)
+    facets_obj = None
+    refine_th = {
+        "top_k_facets": 2,
+        "facet_threshold": 0.32,
+        "hetero_sil_threshold": 0.18,
+        "min_cluster_size_for_split": 40,
+        "max_local_k": 4,
+        "other_label_value": "other",
+    }
+    stable_id_prefix_map = getattr(
+        config, "REFINEMENT_STABLE_ID", {"negative": 0, "neutral": 1, "positive": 2}
+    )
+
+    if refine_enabled:
+        try:
+            facets_path = getattr(config, "REFINEMENT_FACETS_PATH", "rules/facets.yml")
+            thresholds_path = getattr(config, "REFINEMENT_THRESHOLDS_PATH", "rules/thresholds.yml")
+            # SentenceTransformer는 facets 임베딩용으로만 사용 (20개 내외 → 오버헤드 미미)
+            from sentence_transformers import SentenceTransformer
+            device_arg = getattr(config, "DEVICE", None)
+            facet_embedder = SentenceTransformer(config.MODEL_NAME, device=device_arg)
+            facets_obj = load_facets_yml(facets_path, facet_embedder)
+            import yaml
+            with open(thresholds_path, "r", encoding="utf-8") as f:
+                _y = yaml.safe_load(f) or {}
+                refine_th.update(_y.get("refinement", {}))
+            logging.info("   ✓ Refinement loaded (facets=%d)", len(facets_obj))
+        except Exception as e:
+            logging.warning("   ⚠️ Refinement disabled due to init error: %s", e)
+            refine_enabled = False
 
     for idx, file_path in enumerate(input_files, start=1):
         logging.info("🔄 [%d/%d] Processing %s", idx, total, file_path.name)
@@ -110,18 +146,24 @@ def run_full_pipeline(input_files: List[Path], output_dir: Path) -> None:
         t0 = time.time()
         logging.info("   1.6) Running ABSA on clauses (batch_size=%d)…",
                      config.ABSA_BATCH_SIZE)
-        raw_absa = classify_clauses(
-            clause_df,
-            model_name=config.ABSA_MODEL_NAME,
-            batch_size=config.ABSA_BATCH_SIZE,
-            device=config.DEVICE,
-        )
-        logging.info("      → ABSA complete (%d results, %.1fs)",
-                     len(raw_absa), time.time() - t0)
-
-        absa_df = pd.DataFrame(
-            raw_absa, columns=["review_id", "clause", "polarity", "confidence"]
-        )
+        # ABSA cache (per file)
+        absa_cache = out_dir/"cache"/f"{stem}_absa.csv.gz"
+        absa_cache.parent.mkdir(parents=True, exist_ok=True)
+        if resume and absa_cache.exists():
+            logging.info(" 1.6) Using ABSA cache → %s", absa_cache)
+            absa_df = pd.read_csv(absa_cache)
+        else:
+            raw_absa = classify_clauses(
+                clause_df,
+                model_name=config.ABSA_MODEL_NAME,
+                batch_size=config.ABSA_BATCH_SIZE,
+                device=config.DEVICE,
+                )
+            absa_df = pd.DataFrame(raw_absa, columns=["review_id", "clause", "polarity", "confidence"])
+            try:
+                absa_df.to_csv(absa_cache, index=False)
+            except Exception:
+                pass
         logging.info("      ▶ [DEBUG] ABSA polarity counts: %s",
                      absa_df["polarity"].value_counts().to_dict())
 
@@ -150,10 +192,29 @@ def run_full_pipeline(input_files: List[Path], output_dir: Path) -> None:
 
             # 3) Embedding
             emb_t0 = time.time()
-            embeddings = embed_reviews(
+            # Embedding cache (per file/polarity and model)
+            emb_cache = out_dir/"cache"/f"{stem}_{pol}_{config.MODEL_NAME.replace('/', '_')}.npy"
+            if resume and emb_cache.exists():
+                try:
+                    embeddings = np.load(emb_cache)
+                    if embeddings.shape[0] != len(texts):
+                        raise ValueError("shape mismatch — cache invalid")
+                    logging.info(" → [%s] Embeddings cache hit %s", pol, emb_cache.name)
+                except Exception:
+                    embeddings = embed_reviews(
+                        texts, model_name=config.MODEL_NAME,
+                        batch_size=config.BATCH_SIZE, device=config.DEVICE,
+                        )
+                    np.save(emb_cache, embeddings)
+            else:
+                embeddings = embed_reviews(
                 texts, model_name=config.MODEL_NAME,
                 batch_size=config.BATCH_SIZE, device=config.DEVICE,
-            )
+                )
+                try:
+                    np.save(emb_cache, embeddings)
+                except Exception:
+                    pass
             logging.info("      → [%s] Embeddings shape: %s (%.1fs)",
                          pol, embeddings.shape, time.time() - emb_t0)
 
@@ -184,7 +245,7 @@ def run_full_pipeline(input_files: List[Path], output_dir: Path) -> None:
 
             # 6) 진단 (폴라리티별 분포/실루엣 CSV는 그대로 저장)
             evaluate_clusters(
-                labels_raw, coords, raw_embeddings=embeddings,
+                labels_raw.copy(), coords, raw_embeddings=embeddings,
                 output_dir=out_dir, timestamp=timestamp,
             )
 
@@ -205,16 +266,73 @@ def run_full_pipeline(input_files: List[Path], output_dir: Path) -> None:
             # 9) 키워드
             kw = extract_keywords(reps, model_name=config.MODEL_NAME)
 
+            # ── Refinement (비파괴적) : 원본 라벨 유지 + 보조 컬럼 추가 ──
+            if refine_enabled and facets_obj is not None:
+                # [DEBUG] pre-refine probe (labels_raw 상태 확인)
+                lbl_ser = pd.Series(labels_raw)
+                n_other_str = int((lbl_ser.astype(str).str.lower() == "other").sum())
+                logging.info(
+                    "   [DEBUG] labels_raw pre-refine: dtype=%s | uniq(head)=%s | n_other_str=%d",
+                    lbl_ser.dtype,
+                    lbl_ser.astype(str).unique()[:10].tolist(),
+                    n_other_str,
+                )
+                try:
+                    work_df = sub_df.copy()
+
+                    # 안전 캐스팅: 숫자 외 값(NaN/문자열) → -1로 강제
+                    lbl_ser = pd.to_numeric(pd.Series(labels_raw), errors="coerce")
+                    n_nan = int(lbl_ser.isna().sum())
+                    if n_nan:
+                        logging.warning(
+                            "   [DEBUG] labels_raw had %d non-numeric; coercing to -1", n_nan
+                        )
+                    labels_int = lbl_ser.fillna(-1).astype(int)
+                    work_df["cluster_label"] = labels_int
+
+                    logging.info(
+                        "   [DEBUG] cluster_label before refine (head uniq)=%s",
+                        work_df["cluster_label"].astype(str).unique()[:10].tolist(),
+                    )
+
+                    refined_df = refine_clusters(
+                        work_df,
+                        clause_embs=embeddings,
+                        polarity=pol,
+                        facets=facets_obj,
+                        top_k_facets=int(refine_th.get("top_k_facets", 2)),
+                        facet_threshold=float(refine_th.get("facet_threshold", 0.32)),
+                        hetero_sil_threshold=float(refine_th.get("hetero_sil_threshold", 0.18)),
+                        min_cluster_size_for_split=int(refine_th.get("min_cluster_size_for_split", 40)),
+                        max_local_k=int(refine_th.get("max_local_k", 4)),
+                        other_label_value=-1,  # 고정
+                        stable_id_prefix=stable_id_prefix_map.get(pol, 0),
+                    )
+                except Exception:
+                    # 전체 스택트레이스 출력 (원인 파악 쉬움)
+                    logging.exception("      ⚠️ [%s] Refinement failed with exception", pol)
+                    refined_df = None
+            else:
+                refined_df = None
+
+
             # ── 오프셋 적용 후 통합 버퍼에 축적 ──
             base = base_map[pol]
             labels_off = _offset_labels(labels_raw, base)        # np.ndarray(int)
             reps_off = _relabel_dict(reps, base)                 # Dict[int, list]
             kw_off = _relabel_dict(kw, base)                     # Dict[int, list]
 
-            # 절 데이터 누적 (원래 sub_df 컬럼 + 오프셋 라벨 + 폴라리티)
-            combined_clause_df_list.append(
-                sub_df.assign(cluster_label=labels_off, polarity=pol)
-            )
+            if refined_df is not None:
+                # 기존 파이프라인과의 호환을 위해 cluster_label 컬럼은 오프셋 숫자로 유지
+                refined_out = refined_df.copy()
+                refined_out["cluster_label"] = labels_off
+                # polarity, review_id, clause 등은 refined_df가 이미 보존
+                combined_clause_df_list.append(refined_out)
+            else:
+                # 리파인이 비활성/실패한 경우 기존 방식으로 적재
+                combined_clause_df_list.append(
+                    sub_df.assign(cluster_label=labels_off, polarity=pol)
+                )
 
             # reps/kw 누적(키 충돌 없음: 폴라리티별 베이스가 다름)
             combined_reps.update(reps_off)
@@ -224,7 +342,14 @@ def run_full_pipeline(input_files: List[Path], output_dir: Path) -> None:
         if combined_clause_df_list:
             combined_clause_df = pd.concat(combined_clause_df_list, ignore_index=True)
 
-            # Excel (clauses/mapping/reviews)
+            # Stable IDs (optional)
+            if getattr(config, "ENABLE_STABLE_IDS", True):
+                combined_clause_df, stable_map = assign_stable_ids(
+                    combined_clause_df, combined_reps,
+                    state_path=out_dir/"_stable_ids.json",
+                    prefer_col="refined_cluster_id",
+                    )
+            
             save_clustered_clauses(
                 clause_df=combined_clause_df,
                 raw_df=df,
@@ -240,6 +365,14 @@ def run_full_pipeline(input_files: List[Path], output_dir: Path) -> None:
                 kw=combined_kw,
                 output_path=out_dir / f"{stem}_clauses_summary_{timestamp}.json"
             )
+            
+            # run meta for this file
+            try:
+                from sentence_transformers import SentenceTransformer
+                dim = SentenceTransformer(config.MODEL_NAME).get_sentence_embedding_dimension()
+            except Exception:
+                dim = -1
+            write_meta_json(out_dir/"meta.json", model_name=config.MODEL_NAME, embed_dim=dim)
             logging.info("      💾 merged outputs saved")
         else:
             logging.info("   ⏭️ No clauses passed threshold for any polarity — nothing to save.")
@@ -253,6 +386,7 @@ def main() -> None:
                         help="List of input Excel files")
     parser.add_argument("--output_dir", type=Path, default=Path(config.OUTPUT_DIR),
                         help="Directory to save outputs")
+    parser.add_argument("--resume", action="store_true", help="Reuse caches if present (ABSA, embeddings)")
     args = parser.parse_args()
 
     timestamp = datetime.now().strftime("%y%m%d_%H%M%S")
@@ -266,7 +400,9 @@ def main() -> None:
         handlers=[logging.FileHandler(log_path, encoding="utf-8"),
                   logging.StreamHandler(sys.stdout)]
     )
-    run_full_pipeline(args.files, args.output_dir)
+    # run manifest (top level)
+    write_run_manifest(Path(config.OUTPUT_DIR)/"run_manifest.json", config_obj=config)    
+    run_full_pipeline(args.files, args.output_dir, resume=args.resume)
 
 
 if __name__ == "__main__":
