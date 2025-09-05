@@ -68,9 +68,8 @@ UMAP_DIMS_CLUSTER  = 10
 # ───────────────────────────────────────────────────────────────────────────
 # 6. HDBSCAN (fallback defaults; 보통은 tuner 결과 사용)
 # ───────────────────────────────────────────────────────────────────────────
-# 기존 400/320 → 240/120로 완만하게 낮춰 세분화 수준을 소폭 ↑
 HDBSCAN_MIN_CLUSTER_SIZE = 240
-HDBSCAN_MIN_SAMPLES      = 120
+HDBSCAN_MIN_SAMPLES      = 55
 HDBSCAN_SELECTION_EPS    = 0.05
 # UMAP 좌표(저차원) 기준으로는 보통 euclidean이 안정적
 HDBSCAN_METRIC           = "euclidean"
@@ -79,7 +78,7 @@ HDBSCAN_METRIC           = "euclidean"
 # 7. Cluster merge
 # ───────────────────────────────────────────────────────────────────────────
 ENABLE_CLUSTER_MERGE     = True
-CLUSTER_MERGE_THRESHOLD  = 0.90
+CLUSTER_MERGE_THRESHOLD  = 0.93
 MERGE_BATCH_SIZE         = 64
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -138,3 +137,23 @@ SMART_SPLIT_MAX_SPLITS_PER_SENT = 3        # 문장당 최대 분할 수
 
 # Stable IDs / resume cache
 ENABLE_STABLE_IDS = True
+
+# ───────────────────────────────────────────────────────────────────────────
+# Tuner(자동 파라미터) 기본 비율
+# 작을수록 더 세분화(=클러스터 수 ↑), 클수록 더 합침(=클러스터 수 ↓)
+TUNER_BASE_PCT_LARGE = 0.005   # N이 큰 셋 (대략 6천 이상)
+TUNER_BASE_PCT_SMALL = 0.010   # N이 작은 셋
+
+# UMAP 차원/이웃 수의 상·하한 (tuner가 동적으로 설정)
+TUNER_UMAP_MIN_DIMS = 8
+TUNER_UMAP_MAX_DIMS = 14
+TUNER_UMAP_MAX_NEIGHBORS = 100
+
+# ───────────────────────────────────────────────────────────────────────────
+# 파셋 버킷(예: 당도/식감/외관…) 전용 코스닝(coarsening) 노브
+#   → 버킷 내부에서 너무 잘게 쪼개지는 것을 방지하기 위한 완만한 합침 세팅
+BUCKET_MIN_CLUSTER_SIZE_MULT = 1.35   # 기본 min_cluster_size에 곱해 키움
+BUCKET_MIN_SAMPLES_MULT      = 1.15   # min_samples 배수
+BUCKET_UMAP_NEIGHBORS_MULT   = 1.15   # 이웃 수↑ → 과분할 완화
+BUCKET_UMAP_MIN_DIST         = 0.08   # 전역보다 살짝 크게(=붙여서 보되 과분할↓)
+BUCKET_SELECTION_EPS_ADD     = 0.02   # HDBSCAN epsilon 가산 → 붙여주기

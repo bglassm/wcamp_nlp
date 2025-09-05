@@ -1,0 +1,11 @@
+refinement:
+  enabled: true
+  # 수박 1차 라벨링은 facet_top1만 사용 → 혼선 최소화
+  top_k_facets: 1
+  # 더 엄격: 의미가 뚜렷한 절만 대분류에 편입
+  facet_threshold: 0.32
+  # 이하 리파인(군집 내부 이질성)에 대한 보수 설정(기본 유지)
+  hetero_sil_threshold: 0.16
+  min_cluster_size_for_split: 35
+  max_local_k: 4
+  other_label_value: -1

@@ -18,7 +18,6 @@ except ImportError as e:
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-
 def cluster_embeddings(
     embeddings_2d: np.ndarray,
     min_cluster_size: int = config.HDBSCAN_MIN_CLUSTER_SIZE,
@@ -78,6 +77,8 @@ def cluster_embeddings(
     )
     return labels, clusterer
 
+# pipeline/clusterer.py 안의 evaluate_clusters를 다음으로 교체
+
 def evaluate_clusters(
     labels: np.ndarray,
     embeddings_2d: np.ndarray,
@@ -87,71 +88,79 @@ def evaluate_clusters(
     timestamp: str | None = None,
 ) -> None:
     """
-    Log cluster size distribution and silhouette scores.
-
-    Parameters
-    ----------
-    labels : np.ndarray
-        Cluster labels (-1 for noise or other outlier label).
-    embeddings_2d : np.ndarray
-        UMAP‐reduced embeddings used for clustering.
-    raw_embeddings : np.ndarray, optional
-        Original high‐dimensional embeddings. If provided, will also compute
-        silhouette on raw space (cosine).
-    logger : logging.Logger, optional
-        Logger to use; defaults to module logger.
-    output_dir : Path, optional
-        Directory to save CSVs.
-    timestamp : str, optional
-        Timestamp suffix for filenames.
+    클러스터 분포와 실루엣 점수를 안전하게 기록/저장합니다.
+    - 라벨에 int와 str('other')가 섞여 있어도 동작
+    - 실루엣 계산은 유효 라벨이 2개 이상일 때만 수행
+    - 분포/통계 CSV 저장
     """
     lg = logger or logging.getLogger(__name__)
 
-    # --- 1) 문자열 레이블 변환 후 분포 계산 ---
-    # int 와 str 이 섞여 있을 수 있으니 모두 str 로 바꿔 처리
-    labels_str = labels.astype(str)
-    unique, counts = np.unique(labels_str, return_counts=True)
-    dist_info = ", ".join(f"{c}@{u}" for u, c in zip(unique, counts))
+    # --- 1) 분포: 혼합형 라벨 안전 처리 (문자열로 변환 후 집계) ---
+    labels_str = np.array([str(x) for x in np.asarray(labels, dtype=object)])
+    uniq, counts = np.unique(labels_str, return_counts=True)
+    dist_info = ", ".join(f"{c}@{u}" for u, c in zip(uniq, counts))
     lg.info("🔢 Cluster distribution: %s", dist_info)
 
-    # CSV 로 저장
     if output_dir and timestamp:
-        df_dist = pd.DataFrame({
-            "cluster_label": unique,
-            "count": counts,
-        })
-        dist_path = Path(output_dir) / f"cluster_distribution_{timestamp}.csv"
-        df_dist.to_csv(dist_path, index=False, encoding="utf-8-sig")
-        lg.info("💾 Cluster distribution saved → %s", dist_path)
+        try:
+            df_dist = pd.DataFrame({"cluster_label": uniq, "count": counts})
+            dist_path = Path(output_dir) / f"cluster_distribution_{timestamp}.csv"
+            df_dist.to_csv(dist_path, index=False, encoding="utf-8-sig")
+            lg.info("💾 Cluster distribution saved → %s", dist_path)
+        except Exception:
+            lg.exception("⚠️ failed to save cluster_distribution CSV")
 
-    # --- 2) Silhouette 점수 계산 ---
-    # noise(-1) 또는 other 처리된 레이블 제외
-    mask = labels_str != str(config.OUTLIER_LABEL if getattr(config, "OUTLIER_LABEL", "-1") else "-1")
-    if mask.sum() >= 2:
+    # --- 2) 실루엣: noise/other 제외 후 유효성 점검 ---
+    # 제외 대상 라벨 집합: -1, 'other' (대소문자 무시)
+    exclude = {"-1", "other"}
+    mask = np.array([s.lower() not in exclude for s in labels_str], dtype=bool)
+
+    # 유효 표본 수와 유효 라벨 개수 점검
+    valid_n = int(mask.sum())
+    valid_labels = np.unique(labels_str[mask]) if valid_n > 0 else np.array([])
+    n_valid_labels = len(valid_labels)
+
+    if valid_n >= 2 and n_valid_labels >= 2:
         from sklearn.metrics import silhouette_score
 
-        sil_umap = silhouette_score(
-            embeddings_2d[mask], labels_str[mask], metric="euclidean"
-        )
-        msg = f"🔍 Silhouette (UMAP): {sil_umap:.3f}"
+        try:
+            sil_umap = float(silhouette_score(embeddings_2d[mask], labels_str[mask], metric="euclidean"))
+        except Exception:
+            lg.exception("⚠️ Silhouette (UMAP) failed")
+            sil_umap = None
 
+        sil_raw = None
         if raw_embeddings is not None:
-            sil_raw = silhouette_score(
-                raw_embeddings[mask], labels_str[mask], metric="cosine"
-            )
-            msg += f" | (raw): {sil_raw:.3f}"
+            try:
+                sil_raw = float(silhouette_score(raw_embeddings[mask], labels_str[mask], metric="cosine"))
+            except Exception:
+                lg.exception("⚠️ Silhouette (raw) failed")
 
+        msg = "🔍 Silhouette"
+        if sil_umap is not None:
+            msg += f" (UMAP): {sil_umap:.3f}"
+        if sil_raw is not None:
+            msg += f" | (raw): {sil_raw:.3f}"
         lg.info(msg)
 
         if output_dir and timestamp:
-            df_stats = pd.DataFrame([{
-                "silhouette_umap": sil_umap,
-                "silhouette_raw": sil_raw if raw_embeddings is not None else None,
-                "n_clusters": int(len(set(labels_str[mask])) - (1 if str(config.OUTLIER_LABEL) in set(labels_str) else 0)),
-                "n_noise": int((~mask).sum()),
-            }])
-            stats_path = Path(output_dir) / f"cluster_stats_{timestamp}.csv"
-            df_stats.to_csv(stats_path, index=False, encoding="utf-8-sig")
-            lg.info("💾 Cluster stats saved → %s", stats_path)
+            try:
+                df_stats = pd.DataFrame([{
+                    "silhouette_umap": sil_umap,
+                    "silhouette_raw": sil_raw,
+                    "n_clusters": int(n_valid_labels),
+                    "n_noise_or_other": int((~mask).sum()),
+                    "n_samples_used": valid_n,
+                }])
+                stats_path = Path(output_dir) / f"cluster_stats_{timestamp}.csv"
+                df_stats.to_csv(stats_path, index=False, encoding="utf-8-sig")
+                lg.info("💾 Cluster stats saved → %s", stats_path)
+            except Exception:
+                lg.exception("⚠️ failed to save cluster_stats CSV")
     else:
-        lg.info("🔍 Silhouette: insufficient non‐noise points (<2)")
+        # 유효 라벨이 1개거나 표본이 부족할 때
+        if valid_n < 2:
+            lg.info("🔍 Silhouette: insufficient non-noise points (<2)")
+        else:
+            lg.info("🔍 Silhouette: only one valid label (need ≥2 distinct labels)")
+

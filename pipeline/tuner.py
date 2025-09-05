@@ -1,92 +1,105 @@
 # pipeline/tuner.py
-
-from typing import Dict, Optional
-import numpy as np
-import config
+from __future__ import annotations
+import math
 import logging
+from typing import Dict, Optional
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+import numpy as np
 
-# Dataset-specific fixed overrides (optional)
-# 예: {"abalone": {"pct": 0.01}}
-_OVERRIDES: Dict[str, Dict[str, float]] = {}
+import config
 
+log = logging.getLogger("Kss")  # 기존 로그와 동일 prefix 사용
 
-def get_cluster_params(
-    n_docs: int,
-    dataset: Optional[str] = None,
-) -> Dict[str, Dict[str, float]]:
+def _pick_pct(n_docs: int) -> float:
+    """데이터 크기에 따라 베이스 pct를 선택."""
+    return config.TUNER_BASE_PCT_SMALL if n_docs < 6000 else config.TUNER_BASE_PCT_LARGE
+
+def _pick_umap_dims(n_docs: int) -> int:
+    """데이터 크기에 따라 n_components를 완만히 조정."""
+    if n_docs < 500:
+        return max(config.TUNER_UMAP_MIN_DIMS, 8)
+    if n_docs < 2000:
+        return 10
+    if n_docs < 8000:
+        return 12
+    if n_docs < 16000:
+        return 13
+    return config.TUNER_UMAP_MAX_DIMS
+
+def _as_bucket(dataset: Optional[str]) -> bool:
     """
-    n_docs 및 dataset에 따라 UMAP/HDBSCAN 파라미터를 계산해 반환.
-    Returns a dict with keys:
-      - "umap": dict of UMAP kwargs
-      - "hdbscan": dict of HDBSCAN kwargs
-      - "pct": the proportion used to compute min_cluster_size
+    버킷 컨텍스트 판정:
+    main에서 dataset=f"{stem}_{pol}_{facetId}" 형태로 넘기므로
+    언더스코어가 2개 이상이면 버킷으로 간주.
     """
-    # n_docs가 1 미만이면 기본 파라미터 반환 (클러스터링 최소화)
-    if n_docs < 1:
-        logger.info(f"[TUNER] n_docs={n_docs} (<1), using default parameters")
-        return {
-            "umap": {
-                "n_neighbors": 15,
-                "n_components": 2,
-                "min_dist": config.UMAP_MIN_DIST,
-                "metric": config.UMAP_METRIC,
-                "random_state": config.UMAP_RANDOM_STATE,
-            },
-            "hdbscan": {
-                "min_cluster_size": 2,
-                "min_samples": 1,
-                "metric": config.HDBSCAN_METRIC,
-                "cluster_selection_epsilon": getattr(config, "HDBSCAN_SELECTION_EPS", 0.0),
-            },
-            "pct": 0.01,
-        }
+    if not dataset:
+        return False
+    return dataset.count("_") >= 2
 
-    # 1) Dataset override 우선 적용
-    if dataset and dataset in _OVERRIDES:
-        ov = _OVERRIDES[dataset]
-        pct = ov.get("pct", 0.01)
-        logger.info(f"[TUNER-OVERRIDE] dataset={dataset}, pct={pct:.3f}")
+def get_cluster_params(n_rows: int, dataset: Optional[str] = None) -> Dict:
+    """
+    UMAP/HDBSCAN 파라미터 자동 산출.
+    - 전역(폴라리티 단위)과 버킷(파셋 단위)을 컨텍스트로 구분
+    - 버킷 컨텍스트에서는 '합치는' 방향으로 완만히 조정
+    반환 형식:
+    {
+      "umap": {"n_components", "n_neighbors", "min_dist", "metric", "random_state"},
+      "hdbscan": {"min_cluster_size", "min_samples", "metric", "cluster_selection_epsilon"},
+    }
+    """
+    n = max(1, int(n_rows))
+    pct = _pick_pct(n)
+    is_bucket = _as_bucket(dataset)
+
+    # --- UMAP ---
+    # 이웃수: 대략 n * pct를 베이스로, 범위를 5~100로 제한
+    base_neighbors = max(5, min(config.TUNER_UMAP_MAX_NEIGHBORS, int(round(n * pct))))
+    if is_bucket:
+        n_neighbors = int(round(base_neighbors * config.BUCKET_UMAP_NEIGHBORS_MULT))
     else:
-        # 2) 리뷰 수 규모별 비례 계수 설정
-        if n_docs > 10000:
-            pct = 0.005
-        elif n_docs > 5000:
-            pct = 0.01
-        else:
-            pct = 0.005
-        logger.info(f"[TUNER] n_docs={n_docs}, pct={pct:.3f}")
+        n_neighbors = base_neighbors
 
-    # 3) UMAP 파라미터 계산
-    n_neighbors  = min(100, max(5, int(np.sqrt(n_docs))))
-    n_components = max(2, int(np.log2(n_docs)))  # 최소 2차원
+    # 차원 수: 규모에 따라 완만 조정
+    n_components = _pick_umap_dims(n)
+
+    # min_dist: 버킷이면 조금 키워서 과분할 억제
+    min_dist = config.UMAP_MIN_DIST
+    if is_bucket:
+        min_dist = max(min_dist, float(config.BUCKET_UMAP_MIN_DIST))
+
     umap_params = {
-        "n_neighbors": n_neighbors,
-        "n_components": n_components,
-        "min_dist": config.UMAP_MIN_DIST,
+        "n_components": int(n_components),
+        "n_neighbors": int(n_neighbors),
+        "min_dist": float(min_dist),
         "metric": config.UMAP_METRIC,
         "random_state": config.UMAP_RANDOM_STATE,
     }
 
-    # 4) HDBSCAN 파라미터 계산
-    min_cluster_size = max(5, int(n_docs * pct))
-    min_samples      = max(2, int(min_cluster_size * 0.5))
+    # --- HDBSCAN ---
+    base_min_cluster_size = max(5, int(round(n * pct)))
+    base_min_samples = max(2, int(round(base_min_cluster_size * 0.5)))
+
+    if is_bucket:
+        min_cluster_size = int(round(base_min_cluster_size * config.BUCKET_MIN_CLUSTER_SIZE_MULT))
+        min_samples      = int(round(base_min_samples      * config.BUCKET_MIN_SAMPLES_MULT))
+        eps = float(config.HDBSCAN_SELECTION_EPS) + float(config.BUCKET_SELECTION_EPS_ADD)
+    else:
+        min_cluster_size = base_min_cluster_size
+        min_samples      = base_min_samples
+        eps = float(config.HDBSCAN_SELECTION_EPS)
+
     hdbscan_params = {
-        "min_cluster_size": min_cluster_size,
-        "min_samples": min_samples,
+        "min_cluster_size": int(min_cluster_size),
+        "min_samples": int(min_samples),
         "metric": config.HDBSCAN_METRIC,
-        "cluster_selection_epsilon": getattr(config, "HDBSCAN_SELECTION_EPS", 0.0),
+        "cluster_selection_epsilon": float(eps),
     }
 
-    logger.info(
-        "[TUNER] using n_neighbors=%d, n_components=%d, min_cluster_size=%d, min_samples=%d",
-        n_neighbors, n_components, min_cluster_size, min_samples
-    )
+    # ---- 로그 (기존 형식과 유사) ----
+    log.info("[TUNER] n_docs=%d, pct=%.3f%s",
+             n, pct, " [bucket]" if is_bucket else "")
+    log.info("[TUNER] using n_neighbors=%d, n_components=%d, "
+             "min_cluster_size=%d, min_samples=%d",
+             n_neighbors, n_components, min_cluster_size, min_samples)
 
-    return {
-        "umap": umap_params,
-        "hdbscan": hdbscan_params,
-        "pct": pct,
-    }
+    return {"umap": umap_params, "hdbscan": hdbscan_params}

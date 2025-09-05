@@ -96,6 +96,7 @@ def _ordered_clause_columns(df: pd.DataFrame) -> List[str]:
     """Prefer refined/facet columns near the cluster fields if present."""
     preferred = [
         "polarity",
+        "facet_bucket",
         "cluster_label",
         "refined_label",
         "refined_cluster_id",
@@ -130,6 +131,10 @@ def save_clustered_clauses(
     - If `refined_cluster_id` exists in `clause_df`, it is carried through to mapping/reviews.
     - If `stable_cluster_id` exists, it is also carried through.
     """
+    clause_df = clause_df.copy()
+    clause_df["cluster_label"] = (
+        pd.to_numeric(clause_df["cluster_label"], errors="coerce").fillna(-1).astype(int)
+    )
     _ensure_parent_dir(output_path)
     for col in ("review_id", "clause", "polarity", "cluster_label"):
         if col not in clause_df.columns:

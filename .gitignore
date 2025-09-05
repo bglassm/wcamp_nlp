@@ -1,31 +1,91 @@
-# 가상환경 / 캐시 / 출력물
+# 가상환경 / 캐시 / 출력물 
 .venv/
 venv/
 __pycache__/
-*.pyc
+*.pyc 
 
-# 데이터/체크포인트/산출물
+# 데이터/체크포인트/산출물 
 data/
-raw data/
-output/
-checkpoints/
-checkpoints.json
+raw data/ 
+output/ 
+checkpoints/ 
+checkpoints.json 
 
-# 노트북 체크포인트/임시
-.ipynb_checkpoints/
-~$*.docx
-~$*.xlsx
+# 노트북 체크포인트/임시 
+.ipynb_checkpoints/ 
+~$*.docx 
+~$*.xlsx 
 
-# OS/IDE
-.DS_Store
-Thumbs.db
-.vscode/
-.idea/
+# OS/IDE 
+.DS_Store 
+Thumbs.db 
+.vscode/ 
+.idea/ 
 
-# 대용량 중간파일
-*.npy
-*.npz
+# 대용량 중간파일 
+*.npy 
+*.npz 
 
-# 엑셀/CSV 결과물(원하면 주석 처리)
-*.xlsx
+# 엑셀/CSV 결과물
+*.xlsx 
 *.csv
+
+# ── Logs / runtime artifacts
+logs/
+*.log
+nohup.out
+*.pid
+
+# ── Python build / packaging
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+
+# ── Test / tooling caches
+.pytest_cache/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+coverage.xml
+htmlcov/
+
+# ── Generic caches inside repo
+.cache/
+cache/
+joblib/
+
+# ── Model / experiment dirs (if you ever create them locally)
+models/
+experiments/
+wandb/
+
+# ── Binary artifacts (common in ML)
+*.pkl
+*.joblib
+*.model
+*.bin
+*.pt
+*.onnx
+*.h5
+*.parquet
+
+# ── Secrets / local env
+.env
+.env.*
+*.pem
+*.key
+
+# ── Windows extras
+desktop.ini
+ehthumbs.db
+
+# ── Office temp already covered; keep just in case a variant appears
+~$*
+
+# ── (Optional) keep docs/examples CSV/XLSX even if global patterns ignore them
+!docs/**/*.csv
+!docs/**/*.xlsx
