@@ -76,7 +76,15 @@ def _relabel_dict(d: Dict[int, list], base: int) -> Dict[int, list]:
     return new_d
 
 # ────────────────────────────────────────────────────────────────────────────
-def run_full_pipeline(input_files: List[Path], output_dir: Path, *, resume: bool = False) -> None:
+def run_full_pipeline(
+    input_files: List[Path],
+    output_dir: Path,
+    *,
+    resume: bool = False,
+    facets_path_override: str | None = None,
+    thresholds_path_override: str | None = None,
+    alias_terms: List[str] | None = None,
+) -> None:
     total = len(input_files)
     logging.info("▶ Starting full pipeline for %d files", total)
     timestamp = datetime.now().strftime("%y%m%d_%H%M%S")
@@ -126,9 +134,26 @@ def run_full_pipeline(input_files: List[Path], output_dir: Path, *, resume: bool
         # 1) Load + preprocess
         t0 = time.time()
         logging.info("   1) Loading & preprocessing reviews…")
+
         df = load_reviews(file_path)
         df = preprocess_reviews(df)
-        df = df.reset_index(drop=False).rename(columns={"index": config.REVIEW_ID_COL})
+
+        if df.columns.duplicated().any():
+            df = df.loc[:, ~df.columns.duplicated()]
+
+        if "review" not in df.columns:
+            _cands = ["text", "body", "content", "contents", "summary"]
+            _hit = next((c for c in _cands if c in df.columns), None)
+            if _hit:
+                df = df.rename(columns={_hit: "review"})
+            else:
+                raise SystemExit("[load] text column 'review' not found and no fallback candidate present.")
+
+        rid_col = getattr(config, "REVIEW_ID_COL", "review_id")
+        if rid_col not in df.columns:
+            df = df.reset_index(drop=False).rename(columns={"index": rid_col})
+        df[rid_col] = df[rid_col].astype(str)
+
         logging.info("      → Loaded %d reviews (%.1fs)", len(df), time.time() - t0)
 
         # 1.5) Clause splitting
@@ -266,6 +291,15 @@ def run_full_pipeline(input_files: List[Path], output_dir: Path, *, resume: bool
                 texts=texts, embeddings=embeddings,
                 labels=labels_raw, top_k=config.TOP_K_REPRESENTATIVES,
             )
+            # (community 모드)
+            if alias_terms:
+                try:
+                    reps = {
+                        cid: sorted(lst, key=lambda s: any(a in s for a in alias_terms), reverse=True)
+                        for cid, lst in reps.items()
+                    }
+                except Exception:
+                    pass
 
             # 8) 병합 
             if getattr(config, "ENABLE_CLUSTER_MERGE", False) and len(reps) >= 2:
@@ -387,11 +421,15 @@ def run_full_pipeline(input_files: List[Path], output_dir: Path, *, resume: bool
             )
             
             # run meta for this file
+            dim = -1
             try:
-                from sentence_transformers import SentenceTransformer
-                dim = SentenceTransformer(config.MODEL_NAME).get_sentence_embedding_dimension()
+                if 'embeddings' in locals() and hasattr(embeddings, 'shape'):
+                    dim = int(embeddings.shape[1])
+                else:
+                    dim = SentenceTransformer(config.MODEL_NAME, device=getattr(config, "DEVICE", None))\
+                            .get_sentence_embedding_dimension()
             except Exception:
-                dim = -1
+                pass
             write_meta_json(out_dir/"meta.json", model_name=config.MODEL_NAME, embed_dim=dim)
             logging.info("      💾 merged outputs saved")
         else:
@@ -402,27 +440,210 @@ def run_full_pipeline(input_files: List[Path], output_dir: Path, *, resume: bool
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Clause-level clustering pipeline runner")
-    parser.add_argument("--files", nargs="*", type=Path, default=config.INPUT_FILES,
+
+    # ── 공통 파이프라인 인자 ────────────────────────────────────────────────
+    parser.add_argument("--files", nargs="*", type=Path, default=getattr(config, "INPUT_FILES", []),
                         help="List of input Excel files")
-    parser.add_argument("--output_dir", type=Path, default=Path(config.OUTPUT_DIR),
+    parser.add_argument("--output_dir", type=Path, default=Path(getattr(config, "OUTPUT_DIR", "output")),
                         help="Directory to save outputs")
     parser.add_argument("--resume", action="store_true", help="Reuse caches if present (ABSA, embeddings)")
+    parser.add_argument("--facets", type=str, default=None, help="Path to facets YAML (overrides config)")
+    parser.add_argument("--thresholds", type=str, default=None, help="Path to thresholds YAML (overrides config)")
+    parser.add_argument("--mode", choices=["default", "community_filtered"], default="default",
+                        help="community_filtered: summarize + relevance filter then run standard pipeline")
+
+    # ── 커뮤니티 전처리 인자(기본값은 config에서 로드) ─────────────────────
+    parser.add_argument("--product", default=None, help="e.g., apple, paprika (required for community_filtered)")
+    parser.add_argument("--community_rules",
+                        default=getattr(config, "COMMUNITY_RULES_PATH", "rules/community_rules.yml"))
+    parser.add_argument("--rel_tau", type=float,
+                        default=getattr(config, "COMMUNITY_REL_TAU", 0.40))
+    parser.add_argument("--alias_tau", type=float,
+                        default=getattr(config, "COMMUNITY_ALIAS_TAU", 0.40),
+                        help="별칭 임베딩 유사도 게이트 임계값")
+    parser.add_argument("--ban_mode", choices=["soft", "strict", "off"],
+                        default=getattr(config, "COMMUNITY_BAN_MODE", "strict"),
+                        help="금칙어 적용 강도")
+    parser.add_argument("--save_filter_debug", action="store_true",
+                        default=getattr(config, "COMMUNITY_SAVE_FILTER_DEBUG", False),
+                        help="필터링 스코어 디버그 CSV 저장")
+    parser.add_argument("--summary_max_sentences", type=int,
+                        default=getattr(config, "COMMUNITY_SUMMARY_MAX_SENTENCES", 10))
+
     args = parser.parse_args()
 
+    # ── 로깅 ────────────────────────────────────────────────────────────────
     timestamp = datetime.now().strftime("%y%m%d_%H%M%S")
-    log_dir = Path(config.OUTPUT_DIR) / "logs"
+    log_dir = Path(getattr(config, "OUTPUT_DIR", "output")) / "logs"
     log_dir.mkdir(exist_ok=True, parents=True)
     log_path = log_dir / f"clause_pipeline_{timestamp}.log"
-
+    
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s | %(levelname)s | %(message)s",
         handlers=[logging.FileHandler(log_path, encoding="utf-8"),
-                  logging.StreamHandler(sys.stdout)]
+                  logging.StreamHandler(sys.stdout)],
+        force=True
     )
-    # run manifest (top level)
-    write_run_manifest(Path(config.OUTPUT_DIR)/"run_manifest.json", config_obj=config)    
-    run_full_pipeline(args.files, args.output_dir, resume=args.resume)
+    logging.captureWarnings(True)
+
+    # ── 매니페스트 ─────────────────────────────────────────────────────────
+    write_run_manifest(Path(getattr(config, "OUTPUT_DIR", "output")) / "run_manifest.json", config_obj=config)
+
+    # ── 입력 준비 ───────────────────────────────────────────────────────────
+    files_to_run: List[Path] = list(args.files)
+    aliases: List[str] | None = None
+
+    # ── community_filtered: 요약 → 관련성 필터 → 임시 입력 생성 ─────────────
+    if args.mode == "community_filtered":
+        try:
+            from pipeline.summarizer_comm import summarize_row
+            from pipeline.community_loader import load_posts
+            from pipeline.relevance_filter import (
+                build_alias_queries, build_facet_queries,
+                dual_score_relevance, keep_mask_gated
+            )
+        except Exception as e:
+            raise SystemExit(f"[community_filtered] 필요한 모듈이 없습니다: {e}")
+
+        rules_path = Path(args.community_rules)
+        if not rules_path.exists():
+            raise SystemExit(f"[community_filtered] rules not found: {rules_path}")
+        rules: Dict = yaml.safe_load(rules_path.read_text(encoding="utf-8")) or {}
+
+        product = (args.product or "").strip().lower()
+        if not product:
+            raise SystemExit("[community_filtered] --product 가 필요합니다. 예: --product apple")
+
+        # 룰에서 별칭/팩셋/금칙어
+        aliases = (rules.get("products", {}).get(product, {}) or {}).get("aliases", []) or []
+        facets: Dict[str, List[str]] = (rules.get("facets", {}) or {})
+        facet_terms_flat: List[str] = [w for lst in facets.values() for w in (lst or [])]
+        ban_terms: List[str] = list(rules.get("ban_terms", []) or [])
+
+        # 게시글 로드(여러 파일 concat)
+        posts = [load_posts(p, product=product) for p in files_to_run]
+        dfp = pd.concat(posts, ignore_index=True) if posts else pd.DataFrame()
+        if dfp.empty:
+            raise SystemExit("[community_filtered] 입력 게시글이 비어 있습니다.")
+
+        # 요약 → 문장
+        rows = []
+        for _, r in dfp.iterrows():
+            sents = summarize_row(
+                r.get("title", ""),
+                r.get("body", ""),
+                r.get("summary", ""),
+                max_sentences=args.summary_max_sentences
+            )
+            if not sents:
+                continue
+            rows.append({
+                "post_id": r["post_id"], "platform": r["platform"], "link": r["link"],
+                "date": r.get("date"), "product": r["product"], "sentences": [str(s) for s in sents]
+            })
+        if not rows:
+            raise SystemExit("[community_filtered] 요약 결과가 없습니다.")
+
+        # 임베딩 래퍼(프로젝트 표준 embed_reviews 사용)
+        from numpy.linalg import norm as _l2norm
+        def _embed_norm(texts: List[str]) -> np.ndarray:
+            X = embed_reviews(texts, model_name=config.MODEL_NAME,
+                              batch_size=getattr(config, "BATCH_SIZE", 256),
+                              device=getattr(config, "DEVICE", None))
+            X = X.astype(np.float32)
+            n = _l2norm(X, axis=1, keepdims=True) + 1e-12
+            return X / n
+
+        class _EmbedderWrapper:
+            def encode(self, texts, batch_size=256, convert_to_numpy=True, normalize_embeddings=True):
+                return _embed_norm(list(texts))
+
+        embedder = _EmbedderWrapper()
+        alias_q = build_alias_queries(aliases)
+        facet_q = build_facet_queries(facet_terms_flat)
+
+        # 플랫 문장/소유자
+        flat_sents, owners = [], []
+        for row in rows:
+            for s in row["sentences"]:
+                flat_sents.append(s)
+                owners.append(row)
+        if not flat_sents:
+            raise SystemExit("[community_filtered] 요약 문장이 없습니다.")
+
+        # 이중 스코어 + 게이트
+        alias_sim, facet_sim, total = dual_score_relevance(
+            flat_sents, alias_q, facet_q, embedder, facet_terms_flat
+        )
+        mask = keep_mask_gated(
+            flat_sents, alias_sim, facet_sim, total,
+            tau=args.rel_tau, alias_tau=args.alias_tau,
+            lexical_aliases=aliases, ban_terms=ban_terms, ban_mode=args.ban_mode
+        )
+
+        # 임시 입력(XLSX) 생성
+        kept = []
+        serial = 0
+        for sent, ok, ow in zip(flat_sents, mask, owners):
+            serial += 1
+            if not ok:
+                continue
+            kept.append({
+                "platform": ow["platform"],
+                "product": ow["product"],
+                "date": ow.get("date"),
+                "review": sent,
+                "review_id": f"{ow['post_id']}-s{serial}",
+                "link": ow["link"],
+                "source_type": "community"
+            })
+        kept_df = pd.DataFrame(kept)
+        if kept_df.empty:
+            raise SystemExit(f"[community_filtered] 관련성 임계 통과 문장이 없습니다. (tau={args.rel_tau}, alias_tau={args.alias_tau})")
+
+        out_root = Path(args.output_dir) / f"{product}_community"
+        out_root.mkdir(parents=True, exist_ok=True)
+        tmp_input = out_root / "community_kept_input.xlsx"
+        kept_df.to_excel(tmp_input, index=False)
+
+        # 통계/디버그 저장
+        stats_path = out_root / "community_filter_stats.csv"
+        base_df = pd.DataFrame({
+            "review":  flat_sents,
+            "alias_sim": alias_sim,
+            "facet_sim": facet_sim,
+            "total":     total,
+            "kept":      mask.astype(int),
+            "lex_alias_hit": [int(any(a in s for a in aliases)) for s in flat_sents],
+            "banned_hit":    [int(any(b in s for b in ban_terms)) for s in flat_sents],
+        })
+        summ = {
+            "total_sentences": len(base_df),
+            "kept_sentences":  int(base_df["kept"].sum()),
+            "keep_rate":       float(base_df["kept"].mean()) if len(base_df) else 0.0,
+            "alias_hit_rate_all": float(base_df["lex_alias_hit"].mean()) if len(base_df) else 0.0,
+            "alias_hit_rate_kept": float(base_df.loc[base_df["kept"]==1, "lex_alias_hit"].mean())
+                                   if (base_df["kept"]==1).any() else 0.0,
+            "banned_excluded": int(((base_df["banned_hit"]==1) & (base_df["kept"]==0)).sum()),
+            "rel_tau": float(args.rel_tau),
+            "alias_tau": float(args.alias_tau),
+            "ban_mode": str(args.ban_mode),
+        }
+        pd.DataFrame([summ]).to_csv(stats_path, index=False)
+        if args.save_filter_debug:
+            base_df.to_csv(out_root / "community_filter_debug.csv", index=False, encoding="utf-8-sig")
+
+        # 이후 표준 파이프라인 입력 대체
+        files_to_run = [tmp_input]
+
+    # ── 표준 절-단위 파이프라인 실행 ───────────────────────────────────────
+    run_full_pipeline(
+        files_to_run, args.output_dir, resume=args.resume,
+        facets_path_override=args.facets,
+        thresholds_path_override=args.thresholds,
+        alias_terms=(aliases if args.mode == "community_filtered" else None),
+    )
 
 
 if __name__ == "__main__":

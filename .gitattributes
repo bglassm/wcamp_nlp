@@ -16,3 +16,6 @@
 *.pdf binary
 *.npy binary
 *.npz binary
+
+*.yml  text eol=lf
+*.yaml text eol=lf

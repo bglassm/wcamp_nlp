@@ -1,4 +1,5 @@
 from pathlib import Path
+import os as _os
 
 # ───────────────────────────────────────────────────────────────────────────
 # 0. Base paths
@@ -157,3 +158,20 @@ BUCKET_MIN_SAMPLES_MULT      = 1.15   # min_samples 배수
 BUCKET_UMAP_NEIGHBORS_MULT   = 1.15   # 이웃 수↑ → 과분할 완화
 BUCKET_UMAP_MIN_DIST         = 0.08   # 전역보다 살짝 크게(=붙여서 보되 과분할↓)
 BUCKET_SELECTION_EPS_ADD     = 0.02   # HDBSCAN epsilon 가산 → 붙여주기
+
+
+# ---------------------------------------------------------------------------
+# Community-mode defaults (can be overridden by env vars / CLI)
+# ---------------------------------------------------------------------------
+
+# 필터 임계값
+COMMUNITY_REL_TAU: float = float(_os.getenv("COMMUNITY_REL_TAU", "0.40"))
+COMMUNITY_ALIAS_TAU: float = float(_os.getenv("COMMUNITY_ALIAS_TAU", "0.40"))
+COMMUNITY_BAN_MODE: str = _os.getenv("COMMUNITY_BAN_MODE", "strict")  # soft|strict|off
+
+# 요약/디버그
+COMMUNITY_SUMMARY_MAX_SENTENCES: int = int(_os.getenv("COMMUNITY_SUMMARY_MAX_SENTENCES", "10"))
+COMMUNITY_SAVE_FILTER_DEBUG: bool = _os.getenv("COMMUNITY_SAVE_FILTER_DEBUG", "0") in ("1","true","True")
+
+# 룰 경로
+COMMUNITY_RULES_PATH: str = _os.getenv("COMMUNITY_RULES_PATH", "rules/community_rules.yml")
