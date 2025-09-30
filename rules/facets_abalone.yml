@@ -1,0 +1,19 @@
+facets:
+  activity:
+    description: 활력/움직임/흡착력
+    keywords: [활성도, 활력, 살아있, 생생, 움직, 흡착, 붙어, 기운, 힘이]
+  size_uniformity:
+    description: 크기/균일성
+    keywords: [크기, 사이즈, 균일, 들쭉, 작다, 작음, 대/중/소, 개체차]
+  freshness:
+    description: 신선도/비린내/상태
+    keywords: [신선, 신선도, 비린, 냄새, 이취, 오래됨, 상함, 변질]
+  trimming:
+    description: 손질 상태(내장/세척/핏물/껍질)
+    keywords: [손질, 내장, 세척, 청소, 핏물, 껍질, 이물, 모래]
+  package_delivery:
+    description: 포장/누수/온도/배송
+    keywords: [포장, 패키지, 누수, 아이스팩, 냉매, 배송, 지연, 파손]
+  price:
+    description: 가격/가성비
+    keywords: [가격, 비싸, 싸다, 저렴, 가성비]

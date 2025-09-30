@@ -1,0 +1,19 @@
+facets:
+  size_thickness:
+    description: 굵기/크기 이슈
+    keywords: [굵기, 두께, 크기, 사이즈, 가늘, 굵, 길이, 짧, 길다]
+  texture_taste:
+    description: 식감/맛(아삭/퍼석/쓴맛 포함)
+    keywords: [식감, 아삭, 퍼석, 물렁, 단단, 퍽퍽, 맛, 쓴맛, 씁쓸, 비린향, 향]
+  seeds:
+    description: 씨가 많음·씨 관련
+    keywords: [씨, 씨앗, 씨많, 씨가득, 씨 꽉, seed]
+  freshness:
+    description: 신선도/무름/얼음 탓 상함
+    keywords: [신선, 신선도, 무르, 물렁, 썩, 상함, 얼음, 냉해, 변질]
+  price:
+    description: 가격/가성비
+    keywords: [가격, 비싸, 싸다, 저렴, 가성비]
+  package_delivery:
+    description: 포장/누수/파손/배송
+    keywords: [포장, 박스, 누수, 파손, 아이스팩, 냉매, 배송, 지연]

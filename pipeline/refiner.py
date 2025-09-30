@@ -17,6 +17,7 @@ try:
     import yaml  # pyyaml
 except Exception:
     yaml = None
+from pathlib import Path
 
 # ---- Data models ----
 
@@ -77,6 +78,34 @@ def route_to_facets(
         topk.append(pairs)
         top1.append(pairs[0][0] if pairs else "")
     return top1, topk
+
+def load_facets_yml(path: str | Path, embedder):
+    import yaml
+    y = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+    items = y.get("facets") or []
+
+    # ← NEW: dict/list 모두 허용
+    if isinstance(items, dict):
+        items = [
+            {
+                "id": fid,
+                "desc": (v.get("desc") or v.get("description") or ""),
+                "keywords": list(v.get("keywords") or []),
+            }
+            for fid, v in items.items()
+        ]
+    elif isinstance(items, list):
+        normed = []
+        for it in items:
+            fid = it.get("id") or it.get("name")
+            desc = it.get("desc") or it.get("description") or ""
+            kws  = list(it.get("keywords") or [])
+            if not fid:
+                raise ValueError("facet item missing 'id'")
+            normed.append({"id": fid, "desc": desc, "keywords": kws})
+        items = normed
+    else:
+        raise ValueError("facets must be a list or a dict")
 
 # ---- Robust outlier helpers ----
 

@@ -1,0 +1,16 @@
+facets:
+  thickness_texture:
+    description: 회 두께/식감(쫄깃/질김/물컹)
+    keywords: [두께, 식감, 얇, 두껍, 쫄깃, 질기, 질김, 탱탱, 물컹, 퍽퍽]
+  freshness_odor:
+    description: 신선도/비린내·이취
+    keywords: [신선, 신선도, 비린, 비린내, 냄새, 이취, 오래됨, 상함]
+  weight_amount:
+    description: 무게/양/구성
+    keywords: [무게, 중량, 양, 구성, 적다, 많다, 모자람, 푸짐]
+  price:
+    description: 가격/가성비
+    keywords: [가격, 비싸, 싸다, 저렴, 가성비]
+  package_delivery:
+    description: 포장/온도/해동/배송
+    keywords: [포장, 아이스팩, 냉매, 해동, 녹음, 배송, 지연, 파손]

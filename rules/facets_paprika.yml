@@ -1,0 +1,19 @@
+facets:
+  size_count:
+    description: 크기/개수(큰데 2개, 여러 개지만 작다 등)
+    keywords: [크기, 사이즈, 개수, 갯수, 대/중/소, 크다, 작다, 큰데 두개, 작은 게 여러]
+  appearance_color:
+    description: 외관/색상/파손/스크래치/단단함
+    keywords: [외관, 색, 색상, 노랑, 빨강, 균일, 파손, 스크래치, 단단, 주름]
+  texture:
+    description: 식감(무름/아삭)
+    keywords: [식감, 무르, 물렁, 아삭, 단단, 탱탱]
+  freshness:
+    description: 신선도/무름/얼음 탓 상함
+    keywords: [신선, 신선도, 썩, 상함, 얼음, 냉해, 변질]
+  price:
+    description: 가격/가성비
+    keywords: [가격, 비싸, 싸다, 저렴, 가성비]
+  package_delivery:
+    description: 포장/파손/냉매/배송
+    keywords: [포장, 박스, 파손, 아이스팩, 냉매, 배송, 지연]

@@ -1,0 +1,19 @@
+facets:
+  sweetness:
+    description: 당도/단맛
+    keywords: [당도, 단맛, 달다, 달달, 무맛, 싱겁, sweet, sweetness, sweatness]
+  texture:
+    description: 껍질 두께·질김·아삭/퍼석
+    keywords: [식감, 껍질, 두껍, 얇, 질기, 아삭, 퍼석, 퍽퍽, 물렁, 단단]
+  appearance:
+    description: 외관(스크래치/멍/흠집/광택/색)
+    keywords: [외관, 스크래치, 멍, 흠집, 상처, 얼룩, 광택, 색, 반점]
+  freshness:
+    description: 신선도/상함/밀증(과숙)
+    keywords: [신선, 신선도, 오래됨, 썩, 상함, 과숙, 분질, 냄새]
+  price:
+    description: 가격/가성비
+    keywords: [가격, 비싸, 싸다, 저렴, 가성비]
+  package_delivery:
+    description: 포장/완충/파손/배송
+    keywords: [포장, 완충, 박스, 파손, 배송, 지연]

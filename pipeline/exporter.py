@@ -1,3 +1,4 @@
+# pipeline/exporter.py
 from __future__ import annotations
 
 import json
@@ -7,15 +8,58 @@ from typing import Dict, List, Union, Optional
 
 import numpy as np
 import pandas as pd
+import config
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+# 통일된 리뷰 ID 컬럼명
+_RID = getattr(config, "REVIEW_ID_COL", "review_id")
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# helpers
+# ─────────────────────────────────────────────────────────────────────────────
 def _ensure_parent_dir(path: Union[str, Path]) -> None:
     Path(path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
 
 
+def _as_str_id(df: pd.DataFrame) -> pd.DataFrame:
+    """ID 컬럼을 문자열로 강제 (merge dtype 오류 방지)."""
+    if _RID in df.columns:
+        df[_RID] = df[_RID].astype(str)
+    return df
+
+
+def _ordered_clause_columns(df: pd.DataFrame) -> List[str]:
+    """클러스터/리파인 관련 컬럼을 앞쪽에 배치."""
+    preferred = [
+        "polarity",
+        "facet_bucket",
+        "cluster_label",
+        "refined_label",
+        "refined_cluster_id",
+        "stable_cluster_id",
+        "facet_top1",
+        "facet_topk",
+    ]
+    cols = list(df.columns)
+    ordered = [c for c in preferred if c in cols] + [c for c in cols if c not in preferred]
+    return ordered
+
+
+def _labels_to_csv(labs) -> str:
+    try:
+        if isinstance(labs, (list, tuple, np.ndarray, pd.Series)):
+            return ",".join(map(str, labs))
+        return ""
+    except Exception:
+        return ""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# legacy/back-compat utilities
+# ─────────────────────────────────────────────────────────────────────────────
 def save_clustered_reviews(
     df: pd.DataFrame,
     labels: np.ndarray,
@@ -47,9 +91,11 @@ def save_representatives_json(
     indent: int = 2,
 ) -> None:
     _ensure_parent_dir(out_path)
+    # 키가 str로 들어올 수도 있으니 정규화
+    norm = {str(int(k)): v for k, v in ((int(k), v) for k, v in reps.items())}
     with open(out_path, "w", encoding="utf-8") as fp:
-        json.dump(reps, fp, ensure_ascii=ensure_ascii, indent=indent)
-    logger.info("💾 Representatives JSON saved → %s (%d clusters)", out_path, len(reps))
+        json.dump(norm, fp, ensure_ascii=ensure_ascii, indent=indent)
+    logger.info("💾 Representatives JSON saved → %s (%d clusters)", out_path, len(norm))
 
 
 def save_cluster_summary_json(
@@ -58,12 +104,25 @@ def save_cluster_summary_json(
     save_path: Union[str, Path],
 ) -> None:
     """Union of cluster keys from reps and keywords into a single JSON."""
-    all_cids = {int(k) for k in representatives} | {int(k) for k in keywords}
+    # 키가 str/int 섞여도 안전하게 처리
+    def _to_int_keys(d: Dict) -> Dict[int, List[str]]:
+        out = {}
+        for k, v in d.items():
+            try:
+                out[int(k)] = v
+            except Exception:
+                continue
+        return out
+
+    reps_i = _to_int_keys(representatives)
+    kw_i = _to_int_keys(keywords)
+    all_cids = set(reps_i) | set(kw_i)
+
     summary: dict[str, dict[str, List[str]]] = {}
     for cid in sorted(all_cids):
         summary[str(cid)] = {
-            "representatives": representatives.get(cid, []),
-            "keywords": keywords.get(cid, []),
+            "representatives": reps_i.get(cid, []),
+            "keywords": kw_i.get(cid, []),
         }
     _ensure_parent_dir(save_path)
     with open(save_path, "w", encoding="utf-8") as fp:
@@ -77,86 +136,82 @@ def build_cluster_name_map(
 ) -> Dict[str, str]:
     used: set[str] = set()
     name_map: dict[str, str] = {}
-    for cid, kw_list in keywords.items():
+    for cid_raw, kw_list in keywords.items():
+        try:
+            cid = str(int(cid_raw))
+        except Exception:
+            cid = str(cid_raw)
+
         picked: list[str] = []
-        for kw in kw_list:
+        for kw in (kw_list or []):
             if kw not in used:
                 picked.append(kw)
                 used.add(kw)
             if len(picked) == top_k:
                 break
         if len(picked) < top_k:
-            picked.extend(kw_list[: top_k - len(picked)])
-        name_map[str(cid)] = "·".join(picked)
+            picked.extend((kw_list or [])[: top_k - len(picked)])
+        name_map[cid] = "·".join(picked)
     logger.info("cluster_name_map created (%d entries)", len(name_map))
     return name_map
 
 
-def _ordered_clause_columns(df: pd.DataFrame) -> List[str]:
-    """Prefer refined/facet columns near the cluster fields if present."""
-    preferred = [
-        "polarity",
-        "facet_bucket",
-        "cluster_label",
-        "refined_label",
-        "refined_cluster_id",
-        "stable_cluster_id",
-        "facet_top1",
-        "facet_topk",
-    ]
-    cols = list(df.columns)
-    ordered = [c for c in preferred if c in cols] + [c for c in cols if c not in preferred]
-    return ordered
-
-
-def _labels_to_csv(labs) -> str:
-    try:
-        if isinstance(labs, (list, tuple, np.ndarray, pd.Series)):
-            return ",".join(map(str, labs))
-        return ""
-    except Exception:
-        return ""
-
-
+# ─────────────────────────────────────────────────────────────────────────────
+# main exporter
+# ─────────────────────────────────────────────────────────────────────────────
 def save_clustered_clauses(
     clause_df: pd.DataFrame,
     raw_df: pd.DataFrame,
     keywords: Dict[int, List[str]],
-    output_path: Path,
+    output_path: Union[str, Path],
     meta: Optional[dict] = None,
 ) -> None:
     """Save unified workbook with `clauses`, `mapping`, `reviews` (+ optional `meta`).
 
-    - Keeps back-compat sheet names.
-    - If `refined_cluster_id` exists in `clause_df`, it is carried through to mapping/reviews.
-    - If `stable_cluster_id` exists, it is also carried through.
+    - `cluster_label`를 int로 보정.
+    - 머지 전에 **ID dtype을 문자열로 강제**하여 dtype 불일치 오류 방지.
+    - `refined_cluster_id`, `stable_cluster_id`가 있으면 함께 요약 저장.
+    - 리스트/딕셔너리 컬럼(e.g., facet_topk)은 JSON 문자열로 직렬화하여 가독성 개선.
     """
     clause_df = clause_df.copy()
-    clause_df["cluster_label"] = (
-        pd.to_numeric(clause_df["cluster_label"], errors="coerce").fillna(-1).astype(int)
-    )
-    _ensure_parent_dir(output_path)
-    for col in ("review_id", "clause", "polarity", "cluster_label"):
-        if col not in clause_df.columns:
-            raise ValueError(f"'{col}' 컬럼이 clause_df에 없습니다.")
+    raw_df = raw_df.copy()
+
+    # 필수 컬럼 체크
+    required = [_RID, "clause", "polarity", "cluster_label"]
+    missing = [c for c in required if c not in clause_df.columns]
+    if missing:
+        raise ValueError(f"clause_df에 필수 컬럼 누락: {missing}")
+
+    # 타입 보정
+    clause_df["cluster_label"] = pd.to_numeric(
+        clause_df["cluster_label"], errors="coerce"
+    ).fillna(-1).astype(int)
+
+    # ID를 문자열로 통일 (merge dtype mismatch 예방)
+    clause_df = _as_str_id(clause_df)
+    raw_df = _as_str_id(raw_df)
 
     has_refined = "refined_cluster_id" in clause_df.columns
     has_stable = "stable_cluster_id" in clause_df.columns
 
+    _ensure_parent_dir(output_path)
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
-        # clauses sheet (ordered) — facet_topk를 JSON 문자열로 보정
+        # 1) clauses 시트: 표준 컬럼 순서 + JSON 문자열 보정
         clause_out = clause_df.copy()
-        if "facet_topk" in clause_out.columns:
-            clause_out["facet_topk"] = clause_out["facet_topk"].apply(
-                lambda v: json.dumps(v, ensure_ascii=False) if not isinstance(v, str) else v
-            )
+        # 리스트/딕셔너리류는 JSON 문자열로 표시
+        for col in ("facet_topk", "facet_scores", "representatives"):
+            if col in clause_out.columns:
+                clause_out[col] = clause_out[col].apply(
+                    lambda v: json.dumps(v, ensure_ascii=False)
+                    if not isinstance(v, (str, type(None)))
+                    else ("" if v is None else v)
+                )
         clause_out = clause_out[_ordered_clause_columns(clause_out)]
         clause_out.to_excel(writer, sheet_name="clauses", index=False)
 
-        # mapping sheet (original + refined/stable ids if present)
+        # 2) mapping 시트: review별 클러스터 집합
         mapping = (
-            clause_df
-            .groupby("review_id")["cluster_label"]
+            clause_df.groupby(_RID)["cluster_label"]
             .unique()
             .reset_index()
             .rename(columns={"cluster_label": "cluster_labels"})
@@ -165,50 +220,48 @@ def save_clustered_clauses(
 
         if has_refined:
             mapping_ref = (
-                clause_df
-                .groupby("review_id")["refined_cluster_id"]
+                clause_df.groupby(_RID)["refined_cluster_id"]
                 .unique()
                 .reset_index()
                 .rename(columns={"refined_cluster_id": "refined_cluster_ids"})
             )
-            mapping = mapping.merge(mapping_ref, on="review_id", how="left")
+            mapping = mapping.merge(mapping_ref, on=_RID, how="left")
 
         if has_stable:
             mapping_st = (
-                clause_df
-                .groupby("review_id")["stable_cluster_id"]
+                clause_df.groupby(_RID)["stable_cluster_id"]
                 .unique()
                 .reset_index()
                 .rename(columns={"stable_cluster_id": "stable_cluster_ids"})
             )
-            mapping = mapping.merge(mapping_st, on="review_id", how="left")
+            mapping = mapping.merge(mapping_st, on=_RID, how="left")
 
+        # ID 보정(안전)
+        mapping = _as_str_id(mapping)
         mapping.to_excel(writer, sheet_name="mapping", index=False)
 
-        # reviews sheet — refined/stable이 있으면 함께 문자열 컬럼 생성
-        review_summary = raw_df.merge(mapping, on="review_id", how="left").copy()
-        review_summary["cluster"] = review_summary["cluster_labels"].apply(_labels_to_csv)
-
+        # 3) reviews 시트: 원본 리뷰에 매핑 결합
+        review_summary = raw_df.merge(mapping, on=_RID, how="left").copy()
+        review_summary["cluster"] = review_summary.get("cluster_labels", []).apply(_labels_to_csv)
         if "refined_cluster_ids" in review_summary.columns:
             review_summary["refined_cluster"] = review_summary["refined_cluster_ids"].apply(_labels_to_csv)
         if "stable_cluster_ids" in review_summary.columns:
             review_summary["stable_cluster"] = review_summary["stable_cluster_ids"].apply(_labels_to_csv)
 
-        # select columns (존재할 때만 포함)
-        base_cols = ["platform", "product", "date", "review", "review_id", "cluster"]
-        if "refined_cluster" in review_summary.columns:
-            base_cols.append("refined_cluster")
-        if "stable_cluster" in review_summary.columns:
-            base_cols.append("stable_cluster")
+        # 존재 컬럼만 선택(없어도 안전)
+        base_cols = [_RID, "platform", "product", "date", "review", "cluster"]
+        opt_cols = ["refined_cluster", "stable_cluster"]
+        cols = [c for c in base_cols if c in review_summary.columns] + [c for c in opt_cols if c in review_summary.columns]
 
-        review_summary = (
-            review_summary[base_cols]
-            .rename(columns={"product": "product_name", "review": "comments"})
+        review_summary = review_summary[cols].rename(
+            columns={
+                "product": "product_name",
+                "review": "comments",
+            }
         )
-
         review_summary.to_excel(writer, sheet_name="reviews", index=False)
 
-        # optional meta sheet
+        # 4) meta 시트(선택)
         if meta is not None:
             pd.DataFrame([{**meta}]).to_excel(writer, sheet_name="meta", index=False)
 
@@ -226,15 +279,25 @@ def save_clauses_summary_json(
     clause_df: pd.DataFrame,
     reps: Dict[int, List[str]],
     kw: Dict[int, List[str]],
-    output_path: Path
+    output_path: Union[str, Path],
 ) -> None:
     """Summary JSON (representatives + keywords). Uses union of keys for safety."""
-    all_keys = set(map(int, reps.keys())) | set(map(int, kw.keys()))
+    def _to_int_keys(d: Dict) -> Dict[int, List[str]]:
+        out = {}
+        for k, v in d.items():
+            try:
+                out[int(k)] = v
+            except Exception:
+                continue
+        return out
+
+    reps_i = _to_int_keys(reps)
+    kw_i = _to_int_keys(kw)
+    all_keys = set(reps_i) | set(kw_i)
+
     summary = {
-        str(k): {
-            "representatives": reps.get(k, []),
-            "keywords": kw.get(k, []),
-        } for k in sorted(all_keys)
+        str(k): {"representatives": reps_i.get(k, []), "keywords": kw_i.get(k, [])}
+        for k in sorted(all_keys)
     }
     _ensure_parent_dir(output_path)
     with open(output_path, "w", encoding="utf-8") as fp:

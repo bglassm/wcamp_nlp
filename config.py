@@ -9,7 +9,15 @@ DATA_DIR   = BASE_DIR / "data"
 OUTPUT_DIR = BASE_DIR / "output"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-INPUT_FILES = sorted(p for p in DATA_DIR.glob("*.xlsx") if not p.name.startswith("~$"))
+REVIEW_DATA_DIR     = DATA_DIR / "review"
+COMMUNITY_DATA_DIR  = DATA_DIR / "community"
+REVIEW_DATA_DIR.mkdir(parents=True, exist_ok=True)
+COMMUNITY_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+INPUT_FILES = sorted(
+    p for p in REVIEW_DATA_DIR.glob("*.xlsx")
+    if not p.name.startswith("~$")
+)
 
 # ───────────────────────────────────────────────────────────────────────────
 # 1. Loader / Preprocess
