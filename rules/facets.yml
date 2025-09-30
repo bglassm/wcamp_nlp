@@ -1,22 +1,22 @@
-facets:
-  sweetness:
-    description: 단맛/당도 전반(무맛/싱거움 포함)
-    keywords: [당도, 단맛, 달다, 달달, 당이, 무맛, 싱겁, 맛이없, 단단맛, sweet, sweetness, sweatness]
-  texture:
-    description: 식감 전반(아삭/퍼석/질김/무름/단단 등)
-    keywords: [식감, 아삭, 퍼석, 질기, 질김, 무르, 물렁, 단단, 꼬들, 탱탱, 퍽퍽, 씹힘]
-  appearance:
-    description: 외관/표면/색/형태(깨짐/흠집/멍 등)
-    keywords: [외관, 모양, 비주얼, 깨짐, 금, 금가, 스크래치, 멍, 흠집, 색, 얼룩, 균일, 고르지]
-  freshness:
-    description: 신선도/숙성도/이취(미숙/과숙/상함/비린내 등)
-    keywords: [신선, 신선도, 미숙, 덜익, 과숙, 오래됨, 썩, 상함, 변질, 냄새, 이취, 비린, 잡내]
-  size_quantity:
-    description: 크기/중량/개수/양
-    keywords: [크기, 사이즈, 중량, 무게, 개수, 갯수, 양, 적다, 많다, 작다, 큼, 대/중/소]
-  price:
-    description: 가격/가성비
-    keywords: [가격, 비싸, 비쌈, 싸다, 저렴, 가성비, 할인, 특가]
-  package_delivery:
-    description: 포장/냉매/누수/파손/배송
-    keywords: [포장, 패키지, 박스, 아이스팩, 쿨팩, 냉매, 녹음, 해동, 누수, 새어, 파손, 배송, 지연, 도착, 택배]
+buckets:
+- id: sweetness
+  name: sweetness
+  desc: 단맛/당도 전반(무맛/싱거움 포함)
+- id: texture
+  name: texture
+  desc: 식감 전반(아삭/퍼석/질김/무름/단단 등)
+- id: appearance
+  name: appearance
+  desc: 외관/표면/색/형태(깨짐/흠집/멍 등)
+- id: freshness
+  name: freshness
+  desc: 신선도/숙성도/이취(미숙/과숙/상함/비린내 등)
+- id: size_quantity
+  name: size_quantity
+  desc: 크기/중량/개수/양
+- id: price
+  name: price
+  desc: 가격/가성비
+- id: package_delivery
+  name: package_delivery
+  desc: 포장/냉매/누수/파손/배송

@@ -1,22 +1,22 @@
-facets:
-  sweetness:
-    description: 당도/물맛/싱거움
-    keywords: [당도, 단맛, 달다, 달달, 무맛, 싱겁, 물맛, 밍밍, sweet, sweetness, sweatness]
-  texture:
-    description: 식감(아삭/무름/퍼석)
-    keywords: [식감, 아삭, 아삭함, 무르, 물렁, 퍼석, 퍽퍽, 단단, 과즙, 과육, 씨많다]
-  appearance:
-    description: 외관/색/속색/공동(틈) 등
-    keywords: [외관, 색, 속색, 줄무늬, 흠집, 스크래치, 멍, 균일, 공허, 속빈]
-  freshness:
-    description: 신선도/상함/이취
-    keywords: [신선, 신선도, 오래됨, 썩, 상함, 변질, 냄새, 이취]
-  size_quantity:
-    description: 무게/크기/양
-    keywords: [무게, 중량, 크기, 사이즈, 양, 과소, 과대, 작다, 큼]
-  price:
-    description: 가격/가성비
-    keywords: [가격, 비싸, 싸다, 저렴, 가성비, 할인]
-  package_delivery:
-    description: 포장/완충/파손/배송
-    keywords: [포장, 박스, 완충, 파손, 아이스팩, 배송, 지연, 누수]
+buckets:
+- id: sweetness
+  name: sweetness
+  desc: 당도/물맛/싱거움
+- id: texture
+  name: texture
+  desc: 식감(아삭/무름/퍼석)
+- id: appearance
+  name: appearance
+  desc: 외관/색/속색/공동(틈) 등
+- id: freshness
+  name: freshness
+  desc: 신선도/상함/이취
+- id: size_quantity
+  name: size_quantity
+  desc: 무게/크기/양
+- id: price
+  name: price
+  desc: 가격/가성비
+- id: package_delivery
+  name: package_delivery
+  desc: 포장/완충/파손/배송

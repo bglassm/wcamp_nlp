@@ -1,19 +1,19 @@
-facets:
-  freshness:
-    description: 신선도/냄새/해동상태
-    keywords: [신선, 신선도, 오래됨, 썩, 상함, 해동, 녹음, 냄새, 이취]
-  texture:
-    description: 식감(질김/부드러움/오돌뼈)
-    keywords: [식감, 질기, 질김, 질겅, 부드럽, 연하, 오돌뼈, 뼈조각, 씹힘]
-  flavor_aroma:
-    description: 고기향/잡내/풍미
-    keywords: [고기향, 향, 냄새, 잡내, 누린내, 돼지냄새, 풍미, 스멜, 이취]
-  appearance_fat:
-    description: 외관/색/지방량/손질모양
-    keywords: [외관, 색, 선홍, 갈색, 지방, 비계, 마블링, 손질, 모양, 핏물]
-  price:
-    description: 가격/가성비
-    keywords: [가격, 비싸, 싸다, 저렴, 가성비, 할인]
-  package_delivery:
-    description: 포장/누수/온도/배송
-    keywords: [포장, 누수, 핏물, 아이스팩, 냉매, 해동, 배송, 지연, 파손]
+buckets:
+- id: freshness
+  name: freshness
+  desc: 신선도/냄새/해동상태
+- id: texture
+  name: texture
+  desc: 식감(질김/부드러움/오돌뼈)
+- id: flavor_aroma
+  name: flavor_aroma
+  desc: 고기향/잡내/풍미
+- id: appearance_fat
+  name: appearance_fat
+  desc: 외관/색/지방량/손질모양
+- id: price
+  name: price
+  desc: 가격/가성비
+- id: package_delivery
+  name: package_delivery
+  desc: 포장/누수/온도/배송
