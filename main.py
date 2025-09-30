@@ -4,9 +4,8 @@ import argparse
 import warnings
 import logging
 import sys
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import List, Dict
 from datetime import datetime
 import time
 import tempfile
@@ -77,7 +76,6 @@ def _relabel_dict(d: Dict[int, list], base: int) -> Dict[int, list]:
             new_d[base + 999] = v
     return new_d
 
-
 def _ensure_facet_top1(df: pd.DataFrame, *, default: str = "") -> pd.DataFrame:
     """Ensure a ``facet_top1`` column exists by copying from ``facet_bucket`` or filling."""
     if "facet_top1" in df.columns:
@@ -133,513 +131,7 @@ def _load_facets_forgiving(facets_path: Path, facet_embedder):
     bucket_names = [d.get("name", f"F{i}") for i, d in enumerate(facets_list)]
     return facets_obj, bucket_names, tmp_path
 
-
-@dataclass
-class RefinementContext:
-    enabled: bool
-    facets_obj: Any | None
-    thresholds: Dict[str, Any]
-    stable_id_prefix_map: Dict[str, int]
-    cleanup_paths: tuple[Path, ...] = ()
-
-    def is_active(self) -> bool:
-        return self.enabled and self.facets_obj is not None
-
-    def get(self, key: str, default: Any) -> Any:
-        return self.thresholds.get(key, default)
-
-    def cleanup(self) -> None:
-        for path in self.cleanup_paths:
-            if path and path.exists():
-                try:
-                    path.unlink(missing_ok=True)
-                except Exception:
-                    pass
-
-
-@dataclass
-class PolarityArtifacts:
-    polarity: str
-    clauses: pd.DataFrame
-    representatives: Dict[int, list]
-    keywords: Dict[int, list]
-    embedding_dim: Optional[int] = None
-
-
-def _build_refinement_context(
-    *,
-    facets_path_override: Optional[str],
-    thresholds_path_override: Optional[str],
-) -> RefinementContext:
-    refine_enabled = getattr(config, "REFINEMENT_ENABLED", True)
-    refine_th: Dict[str, Any] = {
-        "top_k_facets": 2,
-        "facet_threshold": 0.32,
-        "hetero_sil_threshold": 0.18,
-        "min_cluster_size_for_split": 40,
-        "max_local_k": 4,
-        "other_label_value": -1,
-    }
-    stable_id_prefix_map = getattr(
-        config, "REFINEMENT_STABLE_ID", {"negative": 0, "neutral": 1, "positive": 2}
-    )
-
-    facets_obj: Any | None = None
-    cleanup: list[Path] = []
-
-    if not refine_enabled:
-        logging.info("   ℹ️ Refinement is disabled by config.")
-        return RefinementContext(False, None, refine_th, stable_id_prefix_map, tuple(cleanup))
-
-    try:
-        facets_path = Path(
-            facets_path_override or getattr(config, "REFINEMENT_FACETS_PATH", "rules/facets.yml")
-        )
-        thresholds_path = Path(
-            thresholds_path_override or getattr(config, "REFINEMENT_THRESHOLDS_PATH", "rules/thresholds.yml")
-        )
-        logging.info("   Refinement config → facets=%s | thresholds=%s", facets_path, thresholds_path)
-
-        device_arg = getattr(config, "DEVICE", None)
-        facet_embedder = SentenceTransformer(config.MODEL_NAME, device=device_arg)
-
-        facets_obj, facet_names, norm_tmp_path = _load_facets_forgiving(facets_path, facet_embedder)
-        cleanup.append(norm_tmp_path)
-
-        with thresholds_path.open("r", encoding="utf-8") as f:
-            yaml_payload = yaml.safe_load(f) or {}
-            refine_th.update((yaml_payload.get("refinement") or {}))
-
-        head = ", ".join(facet_names[:8]) + ("…" if len(facet_names) > 8 else "")
-        logging.info("   ✓ Refinement loaded: %d buckets → %s", len(facet_names), head)
-
-    except Exception:
-        logging.exception(
-            "   ⚠️ Refinement disabled (init failed). Check facets/thresholds YAML & schema."
-        )
-        facets_obj = None
-        refine_enabled = False
-
-    return RefinementContext(
-        enabled=refine_enabled and facets_obj is not None,
-        facets_obj=facets_obj,
-        thresholds=refine_th,
-        stable_id_prefix_map=stable_id_prefix_map,
-        cleanup_paths=tuple(cleanup),
-    )
-
-
-def _load_and_preprocess_reviews(file_path: Path) -> pd.DataFrame:
-    t0 = time.time()
-    logging.info("   1) Loading & preprocessing reviews…")
-
-    df = load_reviews(file_path)
-    df = preprocess_reviews(df)
-
-    if df.columns.duplicated().any():
-        df = df.loc[:, ~df.columns.duplicated()]
-
-    if "review" not in df.columns:
-        candidates = ["text", "body", "content", "contents", "summary"]
-        fallback = next((c for c in candidates if c in df.columns), None)
-        if fallback:
-            df = df.rename(columns={fallback: "review"})
-        else:
-            raise SystemExit("[load] text column 'review' not found and no fallback candidate present.")
-
-    rid_col = getattr(config, "REVIEW_ID_COL", "review_id")
-    if rid_col not in df.columns:
-        df = df.reset_index(drop=False).rename(columns={"index": rid_col})
-    df[rid_col] = df[rid_col].astype(str)
-
-    logging.info("      → Loaded %d reviews (%.1fs)", len(df), time.time() - t0)
-    return df
-
-
-def _split_into_clauses(df: pd.DataFrame) -> pd.DataFrame:
-    t0 = time.time()
-    logging.info("   1.5) Splitting into clauses…")
-    clause_df = split_clauses(
-        df,
-        text_col="review",
-        connectives=config.CLAUSE_CONNECTIVES,
-        id_col=config.REVIEW_ID_COL,
-    )
-    logging.info("      → split_clauses done (%d clauses, %.1fs)", len(clause_df), time.time() - t0)
-    return clause_df
-
-
-def _run_absa_with_cache(
-    clause_df: pd.DataFrame,
-    *,
-    out_dir: Path,
-    stem_effective: str,
-    resume: bool,
-) -> pd.DataFrame:
-    t0 = time.time()
-    logging.info("   1.6) Running ABSA on clauses (batch_size=%d)…", config.ABSA_BATCH_SIZE)
-    absa_cache = out_dir / "cache" / f"{stem_effective}_absa.csv.gz"
-    absa_cache.parent.mkdir(parents=True, exist_ok=True)
-
-    if resume and absa_cache.exists():
-        logging.info(" 1.6) Using ABSA cache → %s", absa_cache)
-        absa_df = pd.read_csv(absa_cache)
-    else:
-        raw_absa = classify_clauses(
-            clause_df,
-            model_name=config.ABSA_MODEL_NAME,
-            batch_size=config.ABSA_BATCH_SIZE,
-            device=config.DEVICE,
-        )
-        absa_df = pd.DataFrame(raw_absa, columns=["review_id", "clause", "polarity", "confidence"])
-        try:
-            absa_df.to_csv(absa_cache, index=False)
-        except Exception:
-            pass
-
-    logging.info("      ▶ [DEBUG] ABSA polarity counts: %s", absa_df["polarity"].value_counts().to_dict())
-    logging.info("      → ABSA completed (%.1fs)", time.time() - t0)
-    return absa_df
-
-
-def _load_or_compute_embeddings(
-    texts: List[str],
-    cache_path: Path,
-    *,
-    resume: bool,
-    model_name: str,
-    batch_size: int,
-    device: Optional[str],
-) -> tuple[np.ndarray, bool]:
-    if resume and cache_path.exists():
-        try:
-            embeddings = np.load(cache_path)
-            if embeddings.shape[0] != len(texts):
-                raise ValueError("shape mismatch — cache invalid")
-            return embeddings, True
-        except Exception:
-            pass
-
-    embeddings = embed_reviews(
-        texts,
-        model_name=model_name,
-        batch_size=batch_size,
-        device=device,
-    )
-    try:
-        np.save(cache_path, embeddings)
-    except Exception:
-        pass
-    return embeddings, False
-
-
-def _maybe_refine_clusters(
-    sub_df: pd.DataFrame,
-    embeddings: np.ndarray,
-    labels_raw: np.ndarray,
-    polarity: str,
-    refine_ctx: RefinementContext,
-) -> Optional[pd.DataFrame]:
-    if not refine_ctx.is_active():
-        logging.info(
-            "   [REFINE] skipped (enabled=%s, facets_obj=%s)",
-            refine_ctx.enabled,
-            type(refine_ctx.facets_obj).__name__ if refine_ctx.facets_obj is not None else None,
-        )
-        return None
-
-    try:
-        work_df = sub_df.copy()
-        lbl_ser = pd.to_numeric(pd.Series(labels_raw), errors="coerce")
-        n_nan = int(lbl_ser.isna().sum())
-        if n_nan:
-            logging.warning("   [REFINE] non-numeric labels: %d → coercing to -1", n_nan)
-        labels_int = lbl_ser.fillna(-1).astype(int)
-        work_df["cluster_label"] = labels_int
-
-        clause_embs = _normalize_rows(embeddings.astype(np.float32))
-
-        logging.info(
-            "   [REFINE] start pol=%s | facets=%d | th(facet)=%.2f",
-            polarity,
-            int(len(refine_ctx.facets_obj)),
-            float(refine_ctx.get("facet_threshold", 0.32)),
-        )
-
-        pre_cols = set(work_df.columns)
-        refined_df = refine_clusters(
-            work_df,
-            clause_embs=clause_embs,
-            polarity=polarity,
-            facets=refine_ctx.facets_obj,
-            top_k_facets=int(refine_ctx.get("top_k_facets", 2)),
-            facet_threshold=float(refine_ctx.get("facet_threshold", 0.32)),
-            hetero_sil_threshold=float(refine_ctx.get("hetero_sil_threshold", 0.18)),
-            min_cluster_size_for_split=int(refine_ctx.get("min_cluster_size_for_split", 40)),
-            max_local_k=int(refine_ctx.get("max_local_k", 4)),
-            other_label_value=-1,
-            stable_id_prefix=refine_ctx.stable_id_prefix_map.get(polarity, 0),
-        )
-
-        post_cols = set(refined_df.columns)
-        added = sorted([c for c in post_cols - pre_cols])
-        logging.info("   [REFINE] added_cols=%s", added if added else [])
-
-        cov_col = "facet_top1" if "facet_top1" in refined_df.columns else (
-            "facet_bucket" if "facet_bucket" in refined_df.columns else None
-        )
-        if cov_col is None:
-            raise RuntimeError("Refinement returned no facet columns (facet_top1/facet_bucket missing)")
-
-        cov_cnt = int(refined_df[cov_col].notna().sum())
-        tot_cnt = int(refined_df.shape[0])
-        logging.info(
-            "   [REFINE] %s coverage: %d / %d (%.1f%%)",
-            cov_col,
-            cov_cnt,
-            tot_cnt,
-            100.0 * (cov_cnt / (tot_cnt or 1)),
-        )
-
-        if cov_cnt == 0:
-            raise RuntimeError("Refinement produced zero facet assignments")
-
-        return refined_df
-
-    except Exception:
-        logging.exception("      [REFINE] failed; fallback to non-refined path")
-        return None
-
-
-def _finalize_outputs(
-    artifacts: List[PolarityArtifacts],
-    *,
-    combined_reps: Dict[int, list],
-    combined_kw: Dict[int, list],
-    df: pd.DataFrame,
-    out_dir: Path,
-    stem_effective: str,
-    timestamp: str,
-) -> None:
-    frames = [a.clauses for a in artifacts]
-    combined_clause_df = pd.concat(frames, ignore_index=True)
-    has_f1 = "facet_top1" in combined_clause_df.columns
-    has_fb = "facet_bucket" in combined_clause_df.columns
-
-    if not has_f1:
-        if has_fb:
-            logging.warning("   [WARN] facet_top1 missing but facet_bucket present — copying bucket values")
-        else:
-            logging.warning("   [WARN] No facet columns detected — defaulting facet_top1 to empty strings")
-        frames = [_ensure_facet_top1(df) for df in frames]
-        combined_clause_df = pd.concat(frames, ignore_index=True)
-        has_f1 = "facet_top1" in combined_clause_df.columns
-        has_fb = "facet_bucket" in combined_clause_df.columns
-
-    logging.info("   [CHECK] combined_clause_df cols=%s", sorted(list(combined_clause_df.columns)))
-    logging.info(
-        "   [CHECK] facet_top1=%s facet_bucket=%s",
-        f"{has_f1} (nnz={combined_clause_df['facet_top1'].notna().sum()})" if has_f1 else False,
-        f"{has_fb} (nnz={combined_clause_df['facet_bucket'].notna().sum()})" if has_fb else False,
-    )
-
-    has_facet = "facet_top1" in combined_clause_df.columns
-    nnz = int(combined_clause_df["facet_top1"].notna().sum()) if has_facet else 0
-    logging.info("   [CHECK] facet_top1 present=%s non_null=%d of %d", has_facet, nnz, int(combined_clause_df.shape[0]))
-
-    keep_cols = [
-        c
-        for c in [
-            "review_id",
-            "polarity",
-            "cluster_label",
-            "refined_cluster_id",
-            "facet_top1",
-            "confidence",
-            "clause",
-        ]
-        if c in combined_clause_df.columns
-    ]
-    combined_clause_df.head(200)[keep_cols].to_csv(
-        out_dir / f"debug_combined_head_{stem_effective}.csv",
-        index=False,
-        encoding="utf-8-sig",
-    )
-
-    if getattr(config, "ENABLE_STABLE_IDS", True):
-        combined_clause_df, _stable_map = assign_stable_ids(
-            combined_clause_df,
-            combined_reps,
-            state_path=out_dir / "_stable_ids.json",
-            prefer_col="refined_cluster_id",
-        )
-
-    save_clustered_clauses(
-        clause_df=combined_clause_df,
-        raw_df=df,
-        keywords=combined_kw,
-        output_path=out_dir / f"{stem_effective}_clauses_clustered_{timestamp}.xlsx",
-    )
-    report_path = out_dir / f"{stem_effective}_client_report_{timestamp}.xlsx"
-    save_client_report(
-        clause_df=combined_clause_df,
-        raw_df=df,
-        reps=combined_reps,
-        output_path=report_path,
-    )
-    logging.info("      💾 client report saved → %s", report_path.name)
-
-    save_clauses_summary_json(
-        combined_clause_df,
-        reps=combined_reps,
-        kw=combined_kw,
-        output_path=out_dir / f"{stem_effective}_clauses_summary_{timestamp}.json",
-    )
-
-    embed_dim = next((a.embedding_dim for a in artifacts if a.embedding_dim is not None), -1)
-    if embed_dim == -1:
-        try:
-            embed_dim = SentenceTransformer(
-                config.MODEL_NAME,
-                device=getattr(config, "DEVICE", None),
-            ).get_sentence_embedding_dimension()
-        except Exception:
-            pass
-
-    write_meta_json(out_dir / "meta.json", model_name=config.MODEL_NAME, embed_dim=int(embed_dim))
-    logging.info("      💾 merged outputs saved")
-
-
-def _process_polarity(
-    polarity: str,
-    *,
-    absa_df: pd.DataFrame,
-    out_dir: Path,
-    stem_effective: str,
-    timestamp: str,
-    resume: bool,
-    alias_terms: Optional[List[str]],
-    refine_ctx: RefinementContext,
-    base_map: Dict[str, int],
-) -> Optional[PolarityArtifacts]:
-    subset = absa_df[
-        (absa_df["polarity"] == polarity)
-        & (absa_df["confidence"] >= config.ABSA_CONFIDENCE_THRESHOLD)
-    ].reset_index(drop=True)
-    logging.info(
-        "   ▶ [%s] %d/%d clauses selected (thr=%.2f)",
-        polarity,
-        len(subset),
-        len(absa_df),
-        config.ABSA_CONFIDENCE_THRESHOLD,
-    )
-    if subset.empty:
-        logging.info("      ⏹️ [%s] no clauses, skip", polarity)
-        return None
-
-    texts = subset["clause"].tolist()
-    tuner_params = get_cluster_params(len(texts), dataset=f"{stem_effective}_{polarity}")
-    umap_p, hdbscan_p = tuner_params["umap"], tuner_params["hdbscan"]
-
-    emb_cache = out_dir / "cache" / f"{stem_effective}_{polarity}_{config.MODEL_NAME.replace('/', '_')}.npy"
-    emb_t0 = time.time()
-    embeddings, cache_hit = _load_or_compute_embeddings(
-        texts,
-        emb_cache,
-        resume=resume,
-        model_name=config.MODEL_NAME,
-        batch_size=config.BATCH_SIZE,
-        device=config.DEVICE,
-    )
-    if cache_hit:
-        logging.info(" → [%s] Embeddings cache hit %s", polarity, emb_cache.name)
-    logging.info("      → [%s] Embeddings shape: %s (%.1fs)", polarity, embeddings.shape, time.time() - emb_t0)
-
-    red_t0 = time.time()
-    coords = reduce_embeddings(
-        embeddings,
-        n_components=umap_p["n_components"],
-        n_neighbors=umap_p["n_neighbors"],
-        min_dist=umap_p["min_dist"],
-        metric=umap_p["metric"],
-        random_state=umap_p["random_state"],
-    )
-    logging.info("      → [%s] Reduced coords shape: %s (%.1fs)", polarity, coords.shape, time.time() - red_t0)
-
-    clu_t0 = time.time()
-    labels_raw, _ = cluster_embeddings(
-        coords,
-        min_cluster_size=hdbscan_p["min_cluster_size"],
-        min_samples=hdbscan_p["min_samples"],
-        metric=hdbscan_p["metric"],
-        cluster_selection_epsilon=hdbscan_p["cluster_selection_epsilon"],
-    )
-    logging.info("      → [%s] Clustered (%d labels) (%.1fs)", polarity, len(labels_raw), time.time() - clu_t0)
-
-    evaluate_clusters(
-        labels_raw.copy(),
-        coords,
-        raw_embeddings=embeddings,
-        output_dir=out_dir,
-        timestamp=timestamp,
-    )
-
-    reps = extract_representatives(
-        texts=texts,
-        embeddings=embeddings,
-        labels=labels_raw,
-        top_k=config.TOP_K_REPRESENTATIVES,
-    )
-    if alias_terms:
-        try:
-            reps = {
-                cid: sorted(lst, key=lambda s: any(a in s for a in alias_terms), reverse=True)
-                for cid, lst in reps.items()
-            }
-        except Exception:
-            pass
-
-    if getattr(config, "ENABLE_CLUSTER_MERGE", False) and len(reps) >= 2:
-        merge_map, merged_reps, _ = merge_similar_clusters(
-            reps,
-            model_name=config.MODEL_NAME,
-            threshold=getattr(config, "CLUSTER_MERGE_THRESHOLD", 0.90),
-        )
-        lbls_series = pd.to_numeric(pd.Series(labels_raw), errors="coerce").fillna(-1).astype(int)
-        labels_raw = np.array([
-            merge_map.get(str(int(x)), int(x)) if int(x) >= 0 else -1
-            for x in lbls_series
-        ], dtype=int)
-        reps = merged_reps
-
-    kw = extract_keywords(reps, model_name=config.MODEL_NAME)
-
-    refined_df = _maybe_refine_clusters(subset, embeddings, labels_raw, polarity, refine_ctx)
-
-    base = base_map[polarity]
-    labels_off = _offset_labels(labels_raw, base)
-    reps_off = _relabel_dict(reps, base)
-    kw_off = _relabel_dict(kw, base)
-
-    if refined_df is not None:
-        refined_out = refined_df.copy()
-        refined_out["cluster_label"] = labels_off
-        if "polarity" not in refined_out.columns:
-            refined_out["polarity"] = polarity
-        clause_frame = refined_out
-    else:
-        clause_frame = subset.assign(cluster_label=labels_off, polarity=polarity)
-
-    return PolarityArtifacts(
-        polarity=polarity,
-        clauses=clause_frame,
-        representatives=reps_off,
-        keywords=kw_off,
-        embedding_dim=int(embeddings.shape[1]) if hasattr(embeddings, "shape") else None,
-    )
-
 # --- 메인 파이프라인 ---
-
 def run_full_pipeline(
     input_files: List[Path],
     output_dir: Path,
@@ -654,70 +146,400 @@ def run_full_pipeline(
     logging.info("▶ Starting full pipeline for %d files", total)
     timestamp = datetime.now().strftime("%y%m%d_%H%M%S")
 
+    # 폴라리티 → 오프셋 베이스
     base_map = {"negative": 0, "neutral": 1000, "positive": 2000}
-    refine_ctx = _build_refinement_context(
-        facets_path_override=facets_path_override,
-        thresholds_path_override=thresholds_path_override,
+
+    # --- Refinement 준비(옵션) ---
+    refine_enabled = getattr(config, "REFINEMENT_ENABLED", True)
+    facets_obj = None
+    refine_th = {
+        "top_k_facets": 2,
+        "facet_threshold": 0.32,
+        "hetero_sil_threshold": 0.18,
+        "min_cluster_size_for_split": 40,
+        "max_local_k": 4,
+        "other_label_value": -1,  # 정수 노이즈 라벨 사용
+    }
+    stable_id_prefix_map = getattr(
+        config, "REFINEMENT_STABLE_ID", {"negative": 0, "neutral": 1, "positive": 2}
     )
 
-    try:
-        for idx, file_path in enumerate(input_files, start=1):
-            logging.info("🔄 [%d/%d] Processing %s", idx, total, file_path.name)
-            stem_effective = (save_stem or file_path.stem)
-            out_dir = output_dir / stem_effective
-            out_dir.mkdir(parents=True, exist_ok=True)
+    norm_tmp_path = None
+    if refine_enabled:
+        try:
+            facets_path = Path(
+                facets_path_override or getattr(config, "REFINEMENT_FACETS_PATH", "rules/facets.yml")
+            )
+            thresholds_path = Path(
+                thresholds_path_override or getattr(config, "REFINEMENT_THRESHOLDS_PATH", "rules/thresholds.yml")
+            )
+            logging.info("   Refinement config → facets=%s | thresholds=%s", facets_path, thresholds_path)
 
-            df = _load_and_preprocess_reviews(file_path)
-            clause_df = _split_into_clauses(df)
-            absa_df = _run_absa_with_cache(
+            device_arg = getattr(config, "DEVICE", None)
+            facet_embedder = SentenceTransformer(config.MODEL_NAME, device=device_arg)
+
+            # 스키마 정규화 + 로드
+            facets_obj, facet_names, norm_tmp_path = _load_facets_forgiving(facets_path, facet_embedder)
+
+            # 임계치 로드
+            with thresholds_path.open("r", encoding="utf-8") as f:
+                _y = yaml.safe_load(f) or {}
+                refine_th.update((_y.get("refinement") or {}))
+
+            # 안전한 로그(객체 길이 대신 버킷 이름 사용)
+            head = ", ".join(facet_names[:8]) + ("…" if len(facet_names) > 8 else "")
+            logging.info("   ✓ Refinement loaded: %d buckets → %s", len(facet_names), head)
+
+        except Exception:
+            logging.exception("   ⚠️ Refinement disabled (init failed). Check facets/thresholds YAML & schema.")
+            refine_enabled = False
+        finally:
+            # 임시 파일 정리(필요 시 주석 처리)
+            if norm_tmp_path and norm_tmp_path.exists():
+                try:
+                    norm_tmp_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+    else:
+        logging.info("   ℹ️ Refinement is disabled by config.")
+
+    # --- 파일 루프 ---
+    for idx, file_path in enumerate(input_files, start=1):
+        logging.info("🔄 [%d/%d] Processing %s", idx, total, file_path.name)
+        stem_effective = (save_stem or file_path.stem)
+        out_dir = output_dir / stem_effective
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # 1) Load + preprocess
+        t0 = time.time()
+        logging.info("   1) Loading & preprocessing reviews…")
+
+        df = load_reviews(file_path)
+        df = preprocess_reviews(df)
+
+        if df.columns.duplicated().any():
+            df = df.loc[:, ~df.columns.duplicated()]
+
+        if "review" not in df.columns:
+            _cands = ["text", "body", "content", "contents", "summary"]
+            _hit = next((c for c in _cands if c in df.columns), None)
+            if _hit:
+                df = df.rename(columns={_hit: "review"})
+            else:
+                raise SystemExit("[load] text column 'review' not found and no fallback candidate present.")
+
+        rid_col = getattr(config, "REVIEW_ID_COL", "review_id")
+        if rid_col not in df.columns:
+            df = df.reset_index(drop=False).rename(columns={"index": rid_col})
+        df[rid_col] = df[rid_col].astype(str)
+
+        logging.info("      → Loaded %d reviews (%.1fs)", len(df), time.time() - t0)
+
+        # 1.5) Clause splitting
+        t0 = time.time()
+        logging.info("   1.5) Splitting into clauses…")
+        clause_df = split_clauses(
+            df, text_col="review",
+            connectives=config.CLAUSE_CONNECTIVES,
+            id_col=config.REVIEW_ID_COL,
+        )
+        logging.info("      → split_clauses done (%d clauses, %.1fs)", len(clause_df), time.time() - t0)
+
+        # 1.6) ABSA
+        t0 = time.time()
+        logging.info("   1.6) Running ABSA on clauses (batch_size=%d)…", config.ABSA_BATCH_SIZE)
+        absa_cache = out_dir / "cache" / f"{stem_effective}_absa.csv.gz"
+        absa_cache.parent.mkdir(parents=True, exist_ok=True)
+        if resume and absa_cache.exists():
+            logging.info(" 1.6) Using ABSA cache → %s", absa_cache)
+            absa_df = pd.read_csv(absa_cache)
+        else:
+            raw_absa = classify_clauses(
                 clause_df,
-                out_dir=out_dir,
-                stem_effective=stem_effective,
-                resume=resume,
+                model_name=config.ABSA_MODEL_NAME,
+                batch_size=config.ABSA_BATCH_SIZE,
+                device=config.DEVICE,
+            )
+            absa_df = pd.DataFrame(raw_absa, columns=["review_id", "clause", "polarity", "confidence"])
+            try:
+                absa_df.to_csv(absa_cache, index=False)
+            except Exception:
+                pass
+        logging.info("      ▶ [DEBUG] ABSA polarity counts: %s", absa_df["polarity"].value_counts().to_dict())
+
+        # --- 누적 버퍼 ---
+        combined_clause_df_list: List[pd.DataFrame] = []
+        combined_reps: Dict[int, list] = {}
+        combined_kw: Dict[int, list] = {}
+
+        # 1.7) 폴라리티 루프
+        for pol in ("negative", "neutral", "positive"):
+            acc_rows = sum(d.shape[0] for d in combined_clause_df_list)
+            logging.info("   [ACC] accumulated clauses so far: %d", acc_rows)
+
+            sub_df = absa_df[
+                (absa_df["polarity"] == pol) &
+                (absa_df["confidence"] >= config.ABSA_CONFIDENCE_THRESHOLD)
+            ].reset_index(drop=True)
+            logging.info("   ▶ [%s] %d/%d clauses selected (thr=%.2f)",
+                         pol, len(sub_df), len(absa_df), config.ABSA_CONFIDENCE_THRESHOLD)
+            if sub_df.empty:
+                logging.info("      ⏭️ [%s] no clauses, skip", pol)
+                continue
+
+            texts = sub_df["clause"].tolist()
+
+            # 2) Auto‐tune UMAP/HDBSCAN params
+            tuner_params = get_cluster_params(len(texts), dataset=f"{stem_effective}_{pol}")
+            umap_p, hdbscan_p = tuner_params["umap"], tuner_params["hdbscan"]
+
+            # 3) Embedding
+            emb_t0 = time.time()
+            emb_cache = out_dir / "cache" / f"{stem_effective}_{pol}_{config.MODEL_NAME.replace('/', '_')}.npy"
+            if resume and emb_cache.exists():
+                try:
+                    embeddings = np.load(emb_cache)
+                    if embeddings.shape[0] != len(texts):
+                        raise ValueError("shape mismatch — cache invalid")
+                    logging.info(" → [%s] Embeddings cache hit %s", pol, emb_cache.name)
+                except Exception:
+                    embeddings = embed_reviews(
+                        texts, model_name=config.MODEL_NAME,
+                        batch_size=config.BATCH_SIZE, device=config.DEVICE,
+                    )
+                    np.save(emb_cache, embeddings)
+            else:
+                embeddings = embed_reviews(
+                    texts, model_name=config.MODEL_NAME,
+                    batch_size=config.BATCH_SIZE, device=config.DEVICE,
+                )
+                try:
+                    np.save(emb_cache, embeddings)
+                except Exception:
+                    pass
+            logging.info("      → [%s] Embeddings shape: %s (%.1fs)", pol, embeddings.shape, time.time() - emb_t0)
+
+            # 4) UMAP reduction
+            red_t0 = time.time()
+            coords = reduce_embeddings(
+                embeddings,
+                n_components=umap_p["n_components"],
+                n_neighbors=umap_p["n_neighbors"],
+                min_dist=umap_p["min_dist"],
+                metric=umap_p["metric"],
+                random_state=umap_p["random_state"],
+            )
+            logging.info("      → [%s] Reduced coords shape: %s (%.1fs)", pol, coords.shape, time.time() - red_t0)
+
+            # 5) HDBSCAN clustering
+            clu_t0 = time.time()
+            labels_raw, _ = cluster_embeddings(
+                coords,
+                min_cluster_size=hdbscan_p["min_cluster_size"],
+                min_samples=hdbscan_p["min_samples"],
+                metric=hdbscan_p["metric"],
+                cluster_selection_epsilon=hdbscan_p["cluster_selection_epsilon"],
+            )
+            logging.info("      → [%s] Clustered (%d labels) (%.1fs)", pol, len(labels_raw), time.time() - clu_t0)
+
+            # 6) 진단 저장
+            evaluate_clusters(
+                labels_raw.copy(), coords, raw_embeddings=embeddings,
+                output_dir=out_dir, timestamp=timestamp,
             )
 
-            artifacts: List[PolarityArtifacts] = []
-            combined_reps: Dict[int, list] = {}
-            combined_kw: Dict[int, list] = {}
+            # 7) 대표 문장
+            reps = extract_representatives(
+                texts=texts, embeddings=embeddings,
+                labels=labels_raw, top_k=config.TOP_K_REPRESENTATIVES,
+            )
+            if alias_terms:
+                try:
+                    reps = {
+                        cid: sorted(lst, key=lambda s: any(a in s for a in alias_terms), reverse=True)
+                        for cid, lst in reps.items()
+                    }
+                except Exception:
+                    pass
 
-            for pol in ("negative", "neutral", "positive"):
-                acc_rows = sum(a.clauses.shape[0] for a in artifacts)
-                logging.info("   [ACC] accumulated clauses so far: %d", acc_rows)
-
-                artifact = _process_polarity(
-                    pol,
-                    absa_df=absa_df,
-                    out_dir=out_dir,
-                    stem_effective=stem_effective,
-                    timestamp=timestamp,
-                    resume=resume,
-                    alias_terms=alias_terms,
-                    refine_ctx=refine_ctx,
-                    base_map=base_map,
+            # 8) 병합(옵션)
+            if getattr(config, "ENABLE_CLUSTER_MERGE", False) and len(reps) >= 2:
+                merge_map, merged_reps, _ = merge_similar_clusters(
+                    reps,
+                    model_name=config.MODEL_NAME,
+                    threshold=getattr(config, "CLUSTER_MERGE_THRESHOLD", 0.90),
                 )
-                if not artifact:
-                    continue
+                lbls_series = pd.to_numeric(pd.Series(labels_raw), errors="coerce").fillna(-1).astype(int)
+                labels_raw = np.array([
+                    merge_map.get(str(int(x)), int(x)) if int(x) >= 0 else -1
+                    for x in lbls_series
+                ], dtype=int)
+                reps = merged_reps
 
-                artifacts.append(artifact)
-                combined_reps.update(artifact.representatives)
-                combined_kw.update(artifact.keywords)
+            # 9) 키워드
+            kw = extract_keywords(reps, model_name=config.MODEL_NAME)
 
-            if artifacts:
-                _finalize_outputs(
-                    artifacts,
-                    combined_reps=combined_reps,
-                    combined_kw=combined_kw,
-                    df=df,
-                    out_dir=out_dir,
-                    stem_effective=stem_effective,
-                    timestamp=timestamp,
+            # 10) Refinement
+            refined_df = None
+            if refine_enabled and (facets_obj is not None):
+                try:
+                    # before snapshot
+                    work_df = sub_df.copy()
+                    lbl_ser = pd.to_numeric(pd.Series(labels_raw), errors="coerce")
+                    n_nan = int(lbl_ser.isna().sum())
+                    if n_nan:
+                        logging.warning("   [REFINE] non-numeric labels: %d → coercing to -1", n_nan)
+                    labels_int = lbl_ser.fillna(-1).astype(int)
+                    work_df["cluster_label"] = labels_int
+
+                    # normalize embeddings (cosine)
+                    clause_embs = _normalize_rows(embeddings.astype(np.float32))
+
+                    # run refinement (NOTE: other_label_value MUST be int -1)
+                    logging.info("   [REFINE] start pol=%s | facets=%d | th(facet)=%.2f",
+                                pol, int(len(facets_obj)), float(refine_th.get("facet_threshold", 0.32)))
+
+                    pre_cols = set(work_df.columns)
+                    refined_df = refine_clusters(
+                        work_df,
+                        clause_embs=clause_embs,
+                        polarity=pol,
+                        facets=facets_obj,
+                        top_k_facets=int(refine_th.get("top_k_facets", 2)),
+                        facet_threshold=float(refine_th.get("facet_threshold", 0.32)),
+                        hetero_sil_threshold=float(refine_th.get("hetero_sil_threshold", 0.18)),
+                        min_cluster_size_for_split=int(refine_th.get("min_cluster_size_for_split", 40)),
+                        max_local_k=int(refine_th.get("max_local_k", 4)),
+                        other_label_value=-1,  # ← 정수 -1로 고정 (중요)
+                        stable_id_prefix=stable_id_prefix_map.get(pol, 0),
+                    )
+
+                    post_cols = set(refined_df.columns)
+                    added = sorted([c for c in post_cols - pre_cols])
+                    logging.info("   [REFINE] added_cols=%s", added if added else [])
+
+                    # coverage check
+                    cov_col = "facet_top1" if "facet_top1" in refined_df.columns else (
+                            "facet_bucket" if "facet_bucket" in refined_df.columns else None)
+                    if cov_col is None:
+                        raise RuntimeError("Refinement returned no facet columns (facet_top1/facet_bucket missing)")
+
+                    cov_cnt = int(refined_df[cov_col].notna().sum())
+                    tot_cnt = int(refined_df.shape[0])
+                    logging.info("   [REFINE] %s coverage: %d / %d (%.1f%%)",
+                                cov_col, cov_cnt, tot_cnt, 100.0 * (cov_cnt / (tot_cnt or 1)))
+
+                    if cov_cnt == 0:
+                        raise RuntimeError("Refinement produced zero facet assignments")
+
+                except Exception:
+                    logging.exception("      [REFINE] failed; fallback to non-refined path")
+                    refined_df = None
+            else:
+                logging.info("   [REFINE] skipped (enabled=%s, facets_obj=%s)", refine_enabled, type(facets_obj).__name__ if facets_obj is not None else None)
+
+
+            # --- 오프셋 적용 후 통합 ---
+            base = base_map[pol]
+            labels_off = _offset_labels(labels_raw, base)
+            reps_off = _relabel_dict(reps, base)
+            kw_off = _relabel_dict(kw, base)
+
+            if refined_df is not None:
+                refined_out = refined_df.copy()
+                refined_out["cluster_label"] = labels_off  # offest만 덮어씀 (분류 컬럼은 그대로 유지)
+                combined_clause_df_list.append(refined_out)
+            else:
+                combined_clause_df_list.append(sub_df.assign(cluster_label=labels_off, polarity=pol))
+
+            combined_reps.update(reps_off)
+            combined_kw.update(kw_off)
+
+        # -- after concatenation, fail-fast if facet columns missing ------------------
+        combined_clause_df = pd.concat(combined_clause_df_list, ignore_index=True)
+        has_f1 = "facet_top1" in combined_clause_df.columns
+        has_fb = "facet_bucket" in combined_clause_df.columns
+
+        if not has_f1:
+            if has_fb:
+                logging.warning(
+                    "   [WARN] facet_top1 missing but facet_bucket present — copying bucket values"
                 )
             else:
-                logging.info("   ⏭️ No clauses passed threshold for any polarity — nothing to save.")
+                logging.warning(
+                    "   [WARN] No facet columns detected — defaulting facet_top1 to empty strings"
+                )
+            combined_clause_df_list = [_ensure_facet_top1(df) for df in combined_clause_df_list]
+            combined_clause_df = pd.concat(combined_clause_df_list, ignore_index=True)
+            has_f1 = "facet_top1" in combined_clause_df.columns
+            has_fb = "facet_bucket" in combined_clause_df.columns
 
-            logging.info("✅ Completed %s (%d/%d)\n", stem_effective, idx, total)
-    finally:
-        refine_ctx.cleanup()
+        logging.info("   [CHECK] combined_clause_df cols=%s", sorted(list(combined_clause_df.columns)))
+        logging.info(
+            "   [CHECK] facet_top1=%s facet_bucket=%s",
+            f"{has_f1} (nnz={combined_clause_df['facet_top1'].notna().sum()})" if has_f1 else False,
+            f"{has_fb} (nnz={combined_clause_df['facet_bucket'].notna().sum()})" if has_fb else False,
+        )
+
+        # --- 저장 ---
+        if combined_clause_df_list:
+            combined_clause_df = pd.concat(combined_clause_df_list, ignore_index=True)
+            # 결합 결과 점검: facet_top1 존재/결측 여부
+            has_facet = "facet_top1" in combined_clause_df.columns
+            nnz = int(combined_clause_df["facet_top1"].notna().sum()) if has_facet else 0
+            logging.info("   [CHECK] combined_clause_df cols=%s", sorted(list(combined_clause_df.columns)))
+            logging.info("   [CHECK] facet_top1 present=%s non_null=%d of %d", has_facet, nnz, int(combined_clause_df.shape[0]))
+
+            # 작은 샘플 CSV (보고서 전에 눈으로 바로 봄)
+            keep_cols = [c for c in ["review_id","polarity","cluster_label","refined_cluster_id","facet_top1","confidence","clause"] if c in combined_clause_df.columns]
+            combined_clause_df.head(200)[keep_cols].to_csv(out_dir / f"debug_combined_head_{stem_effective}.csv", index=False, encoding="utf-8-sig")
+
+            # Stable IDs
+            if getattr(config, "ENABLE_STABLE_IDS", True):
+                combined_clause_df, _stable_map = assign_stable_ids(
+                    combined_clause_df, combined_reps,
+                    state_path=out_dir / "_stable_ids.json",
+                    prefer_col="refined_cluster_id",
+                )
+
+            save_clustered_clauses(
+                clause_df=combined_clause_df,
+                raw_df=df,
+                keywords=combined_kw,
+                output_path=out_dir / f"{stem_effective}_clauses_clustered_{timestamp}.xlsx"
+            )
+            report_path = out_dir / f"{stem_effective}_client_report_{timestamp}.xlsx"
+            save_client_report(
+                clause_df=combined_clause_df,
+                raw_df=df,
+                reps=combined_reps,
+                output_path=report_path,
+            )
+            logging.info("      💾 client report saved → %s", report_path.name)
+
+            save_clauses_summary_json(
+                combined_clause_df,
+                reps=combined_reps,
+                kw=combined_kw,
+                output_path=out_dir / f"{stem_effective}_clauses_summary_{timestamp}.json"
+            )
+
+            # run meta
+            dim = -1
+            try:
+                if 'embeddings' in locals() and hasattr(embeddings, 'shape'):
+                    dim = int(embeddings.shape[1])
+                else:
+                    dim = SentenceTransformer(config.MODEL_NAME, device=getattr(config, "DEVICE", None))\
+                            .get_sentence_embedding_dimension()
+            except Exception:
+                pass
+            write_meta_json(out_dir / "meta.json", model_name=config.MODEL_NAME, embed_dim=dim)
+            logging.info("      💾 merged outputs saved")
+        else:
+            logging.info("   ⏭️ No clauses passed threshold for any polarity — nothing to save.")
+
+        logging.info("✅ Completed %s (%d/%d)\n", stem_effective, idx, total)
 
 # --- CLI 진입점 ---
 def main() -> None:
