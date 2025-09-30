@@ -1,19 +1,19 @@
 buckets:
 - id: activity
   name: activity
-  desc: 활력/움직임/흡착력
+  desc: '활성도 관련 표현: 활력, 움직임, 흡착력'
 - id: size_uniformity
   name: size_uniformity
-  desc: 크기/균일성
+  desc: '크기/균일성 관련 표현: 크기, 균일성'
 - id: freshness
   name: freshness
-  desc: 신선도/비린내/상태
+  desc: '신선도 관련 표현: 신선도, 비린내, 상태'
 - id: trimming
   name: trimming
-  desc: 손질 상태(내장/세척/핏물/껍질)
+  desc: '손질 관련 표현: 손질 상태(내장, 세척, 핏물, 껍질)'
 - id: package_delivery
   name: package_delivery
-  desc: 포장/누수/온도/배송
+  desc: '패키지/배송 관련 표현: 포장, 누수, 온도, 배송'
 - id: price
   name: price
-  desc: 가격/가성비
+  desc: '가격 관련 표현: 가격, 가성비'

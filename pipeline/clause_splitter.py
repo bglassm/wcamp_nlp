@@ -70,7 +70,7 @@ def _cosine_distance(a: str, b: str) -> float:
         except Exception as e:
             logger.warning("Embedding model load failed in clause splitter: %s", e)
             return 0.0
-    vec = _model.encode([a, b], convert_to_numpy=True, normalize_embeddings=True, batch_size=2)
+    vec = _model.encode([a, b], convert_to_numpy=True, normalize_embeddings=True, batch_size=2, show_progress_bar=False)
     return float(1.0 - np.dot(vec[0], vec[1]))
 
 

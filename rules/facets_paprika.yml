@@ -1,19 +1,19 @@
 buckets:
-- id: size_count
-  name: size_count
-  desc: 크기/개수(큰데 2개, 여러 개지만 작다 등)
-- id: appearance_color
-  name: appearance_color
-  desc: 외관/색상/파손/스크래치/단단함
 - id: texture
   name: texture
-  desc: 식감(무름/아삭)
+  desc: '식감 관련 표현: 식감(무름, 아삭)'
+- id: appearance
+  name: appearance
+  desc: '외관 관련 표현: 색상, 상처, 크기, 균일성, 광택'
+- id: size_count
+  name: size_count
+  desc: '크기/개수 관련 표현: 크기, 개수(큰데 2개, 여러 개지만 작다 등)'
 - id: freshness
   name: freshness
-  desc: 신선도/무름/얼음 탓 상함
+  desc: '신선도 관련 표현: 신선도, 무름, 얼음 탓 상함'
 - id: price
   name: price
-  desc: 가격/가성비
+  desc: '가격 관련 표현: 가격, 가성비'
 - id: package_delivery
   name: package_delivery
-  desc: 포장/파손/냉매/배송
+  desc: '패키지/배송 관련 표현: 포장, 파손, 냉매, 배송'

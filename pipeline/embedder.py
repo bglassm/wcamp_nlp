@@ -52,7 +52,7 @@ def embed_reviews(
     embeddings = model.encode(
         texts,
         batch_size=batch_size,
-        show_progress_bar=True,
+        show_progress_bar=False,
         convert_to_numpy=True,
         device=device,
         normalize_embeddings=True,

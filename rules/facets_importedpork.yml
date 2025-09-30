@@ -1,19 +1,19 @@
 buckets:
 - id: freshness
   name: freshness
-  desc: 신선도/냄새/해동상태
+  desc: '신선도 관련 표현: 신선도, 냄새, 해동상태'
 - id: texture
   name: texture
-  desc: 식감(질김/부드러움/오돌뼈)
-- id: flavor_aroma
-  name: flavor_aroma
-  desc: 고기향/잡내/풍미
+  desc: '식감 관련 표현: 식감(질김, 부드러움, 오돌뼈)'
+- id: aroma_flavor
+  name: aroma_flavor
+  desc: '고기향/맛 관련 표현: 잡내, 고기냄새, 향, 풍미, 누린내, 맛있다/없다'
 - id: appearance_fat
   name: appearance_fat
-  desc: 외관/색/지방량/손질모양
+  desc: '외관/지방 관련 표현: 외관, 색, 지방량, 손질모양'
 - id: price
   name: price
-  desc: 가격/가성비
+  desc: '가격 관련 표현: 가격, 가성비'
 - id: package_delivery
   name: package_delivery
-  desc: 포장/누수/온도/배송
+  desc: '패키지/배송 관련 표현: 포장, 누수, 온도, 배송'

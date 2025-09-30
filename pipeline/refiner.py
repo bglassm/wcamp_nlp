@@ -43,7 +43,7 @@ def load_facets_yml(path: str, embedder) -> List[Facet]:
         y = yaml.safe_load(f)
     items = y.get("facets", [])
     texts = [f"{it['id']}: {it.get('desc','')}" for it in items]
-    embs = embedder.encode(texts, batch_size=32, convert_to_numpy=True, normalize_embeddings=True)
+    embs = embedder.encode(texts, batch_size=32, show_progress_bar=False, convert_to_numpy=True, normalize_embeddings=True)
     facets = [Facet(id=it['id'], desc=it.get('desc',''), emb=e) for it, e in zip(items, embs)]
     return facets
 

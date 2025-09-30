@@ -4,6 +4,7 @@ import argparse
 import warnings
 import logging
 import sys
+import os
 from pathlib import Path
 from typing import List, Dict
 from datetime import datetime
@@ -12,6 +13,23 @@ import tempfile
 
 import pandas as pd
 import numpy as np
+
+os.environ.setdefault("TQDM_DISABLE", "1")  # tqdm 전역 비활성화
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")  # 허공 경고/프로그레스 억제
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+
+# sentence-transformers tqdm 전역 OFF
+try:
+    from sentence_transformers import util as _st_util
+    _st_util.set_progress_bar_enabled(False)
+except Exception:
+    pass
+
+try:
+    import tqdm
+    tqdm.tqdm = lambda *a, **k: iter(a[0]) if a else iter([])
+except Exception:
+    pass
 
 import config
 from pipeline.loader import load_reviews
@@ -48,6 +66,8 @@ logging.getLogger("kss").setLevel(logging.ERROR)
 logging.getLogger("weasel").setLevel(logging.ERROR)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=ResourceWarning)
+
+logger = logging.getLogger(__name__)
 
 # --- 유틸: 라벨 오프셋/병합 ---
 def _offset_labels(labels: np.ndarray, base: int) -> np.ndarray:
@@ -100,38 +120,70 @@ def _load_facets_forgiving(facets_path: Path, facet_embedder):
     with facets_path.open("r", encoding="utf-8") as f:
         y = yaml.safe_load(f) or {}
 
-    def _to_list(obj):
+        import os as _os
+        _abs_path = _os.path.abspath(facets_path)
+        _root_type = type(y).__name__
+        _root_keys = list(y.keys())[:10] if isinstance(y, dict) else []
+        logger.info("[FACETS] loaded: %s | root=%s keys=%s", _abs_path, _root_type, _root_keys)
+
+    def to_list(obj):
+        """
+        Accept:
+        - list schema: [{"id":..,"name":..,"desc":..}, ...] or {"buckets":[...]}
+        - dict schema: {"facets": {"freshness": {"description": "...", "keywords":[...]}, ...}}
+        """
+        # case 1: already a list
         if isinstance(obj, list):
-            out = []
-            for i, it in enumerate(obj):
-                if not isinstance(it, dict):
-                    continue
-                name = str(it.get("name") or it.get("id") or f"F{i}")
-                kws  = list(it.get("keywords") or it.get("synonyms") or it.get("words") or [])
-                desc = it.get("description", "")
-                out.append({"name": name, "description": desc, "keywords": kws})
-            return out
-        if isinstance(obj, dict) and "facets" in obj:
-            return _to_list(obj["facets"])
-        if isinstance(obj, dict) and obj and all(isinstance(v, dict) for v in obj.values()):
-            out = []
-            for i, (name, val) in enumerate(obj.items()):
-                kws  = list(val.get("keywords") or val.get("synonyms") or val.get("words") or [])
-                desc = val.get("description", "")
-                out.append({"name": str(name), "description": desc, "keywords": kws})
-            return out
+            return obj
+        # case 2: dict wrapper
+        if isinstance(obj, dict):
+            # standard: buckets list
+            if "buckets" in obj and isinstance(obj["buckets"], list):
+                return obj["buckets"]
+            # legacy: facets dict
+            if "facets" in obj and isinstance(obj["facets"], dict) and obj["facets"]:
+                buckets = []
+                for name, node in obj["facets"].items():
+                    node = node or {}
+                    # desc: desc > description > keywords → fallback
+                    desc = None
+                    for k in ("desc", "description"):
+                        v = node.get(k)
+                        if v and str(v).strip():
+                            desc = str(v).strip()
+                            break
+                    if not desc:
+                        kws = node.get("keywords") or []
+                        if isinstance(kws, (list, tuple)) and kws:
+                            desc = f"{name} 관련 표현: " + " ".join(map(str, kws))
+                        else:
+                            desc = f"{name}이/가 좋다 나쁘다 만족 불만"
+                    buckets.append({
+                        "id": str(name).lower().replace(" ", ""),
+                        "name": str(name),
+                        "desc": desc
+                    })
+                return buckets
+        # fallback
         raise RuntimeError(f"Unsupported facets YAML schema: {type(obj).__name__}")
 
-    facets_list = _to_list(y)
+    facets_list = to_list(y)
+    logger.info("[FACETS] normalized buckets: %d | head=%s",
+                len(facets_list),
+                [str(d.get("name") or d.get("id")) for d in facets_list[:3]])
 
     # 임시 정규화 YAML 생성
     tmp = tempfile.NamedTemporaryFile("w", delete=False, suffix=".yml", encoding="utf-8")
-    yaml.safe_dump({"facets": facets_list}, tmp, allow_unicode=True, sort_keys=False)
+    yaml.safe_dump({"buckets": facets_list}, tmp, allow_unicode=True, sort_keys=False)
     tmp_path = Path(tmp.name)
     tmp.close()
 
     facets_obj = load_facets_yml(str(tmp_path), facet_embedder)
+    if not facets_obj:
+        logger.error("[FACETS] load_facets_yml returned empty/None for %s", _abs_path)
+        raise ValueError(f"No facets loaded after normalization ? check path/schema: {facets_path}")
     bucket_names = [d.get("name", f"F{i}") for i, d in enumerate(facets_list)]
+    logger.info("[FACETS] bucket_names(head)=%s", bucket_names[:5])
     return facets_obj, bucket_names, tmp_path
 
 # --- 메인 파이프라인 ---
@@ -456,14 +508,13 @@ def run_full_pipeline(
             else:
                 clause_frame = sub_df.assign(cluster_label=labels_off, polarity=pol)
 
-            if facets_obj is not None:
-                clause_frame = apply_facet_routing(
-                    clause_frame,
-                    clause_embs=embeddings,
-                    facets=facets_obj,
-                    top_k=int(refine_th.get("top_k_facets", 2)),
-                    threshold=float(refine_th.get("facet_threshold", 0.32)),
-                )
+            clause_frame = apply_facet_routing(
+                clause_frame,
+                clause_embs=embeddings,
+                facets=facets_obj,
+                top_k=int(refine_th.get("top_k_facets", 2)),
+                threshold=float(refine_th.get("facet_threshold", 0.32)),
+            )
 
             combined_clause_df_list.append(clause_frame)
 
@@ -482,7 +533,7 @@ def run_full_pipeline(
                 )
             else:
                 logging.warning(
-                    "   [WARN] No facet columns detected — defaulting facet_top1 to empty strings"
+                    "   [WARN] No facet columns detected — leaving facet_top1 as nulls"
                 )
             combined_clause_df_list = [_ensure_facet_top1(df) for df in combined_clause_df_list]
             combined_clause_df = pd.concat(combined_clause_df_list, ignore_index=True)

@@ -1,19 +1,19 @@
 buckets:
 - id: size_thickness
   name: size_thickness
-  desc: 굵기/크기 이슈
-- id: texture_taste
-  name: texture_taste
-  desc: 식감/맛(아삭/퍼석/쓴맛 포함)
-- id: seeds
-  name: seeds
-  desc: 씨가 많음·씨 관련
+  desc: '굵기/크기 관련 표현: 굵기, 크기 이슈'
+- id: taste_texture
+  name: taste_texture
+  desc: '식감/맛 관련 표현: 아삭하다, 퍼석하다, 쓴맛, 신맛, 밍밍, 향'
+- id: seed
+  name: seed
+  desc: '씨 관련 표현: 씨가 많다, 적다, 거슬린다, 딱딱하다, 씨 제거'
 - id: freshness
   name: freshness
-  desc: 신선도/무름/얼음 탓 상함
+  desc: '신선도 관련 표현: 신선도, 무름, 얼음 탓 상함'
 - id: price
   name: price
-  desc: 가격/가성비
+  desc: '가격 관련 표현: 가격, 가성비'
 - id: package_delivery
   name: package_delivery
-  desc: 포장/누수/파손/배송
+  desc: '패키지/배송 관련 표현: 포장, 누수, 파손, 배송'

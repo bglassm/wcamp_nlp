@@ -1,22 +1,22 @@
 buckets:
 - id: sweetness
   name: sweetness
-  desc: 당도/물맛/싱거움
+  desc: '당도 관련 표현: 당도, 물맛, 싱거움'
 - id: texture
   name: texture
-  desc: 식감(아삭/무름/퍼석)
+  desc: '식감 관련 표현: 식감(아삭, 무름, 퍼석)'
 - id: appearance
   name: appearance
-  desc: 외관/색/속색/공동(틈) 등
+  desc: '외관 관련 표현: 외관, 색, 속색, 공동(틈) 등'
+- id: weight
+  name: weight
+  desc: '무게 관련 표현: 무게, 중량, 개수, 양, 표기와 다름, 부족, 과다'
 - id: freshness
   name: freshness
-  desc: 신선도/상함/이취
-- id: size_quantity
-  name: size_quantity
-  desc: 무게/크기/양
+  desc: '신선도 관련 표현: 신선도, 상함, 이취'
 - id: price
   name: price
-  desc: 가격/가성비
+  desc: '가격 관련 표현: 가격, 가성비'
 - id: package_delivery
   name: package_delivery
-  desc: 포장/완충/파손/배송
+  desc: '패키지/배송 관련 표현: 포장, 완충, 파손, 배송'

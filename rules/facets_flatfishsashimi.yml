@@ -1,16 +1,16 @@
 buckets:
 - id: thickness_texture
   name: thickness_texture
-  desc: 회 두께/식감(쫄깃/질김/물컹)
-- id: freshness_odor
-  name: freshness_odor
-  desc: 신선도/비린내·이취
-- id: weight_amount
-  name: weight_amount
-  desc: 무게/양/구성
+  desc: '두께/식감 관련 표현: 회 두께, 식감(쫄깃, 질김, 물컹)'
+- id: freshness
+  name: freshness
+  desc: '신선도 관련 표현: 비린내, 비리다, 냄새, 신선하다, 선도'
+- id: weight
+  name: weight
+  desc: '무게/양 관련 표현: 양이 적다/많다, 중량, 분량, 부족, 넉넉'
 - id: price
   name: price
-  desc: 가격/가성비
+  desc: '가격 관련 표현: 가격, 가성비'
 - id: package_delivery
   name: package_delivery
-  desc: 포장/온도/해동/배송
+  desc: '패키지/배송 관련 표현: 포장, 온도, 해동, 배송'

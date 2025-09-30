@@ -46,14 +46,14 @@ def dual_score_relevance(
     """
     if not sentences:
         return np.array([]), np.array([]), np.array([])
-    S = embedder.encode(sentences, batch_size=256, convert_to_numpy=True, normalize_embeddings=True)
+    S = embedder.encode(sentences, batch_size=256, show_progress_bar=False, convert_to_numpy=True, normalize_embeddings=True)
     alias_sim = np.zeros(len(sentences), dtype=np.float32)
     facet_sim = np.zeros(len(sentences), dtype=np.float32)
     if alias_q:
-        A = embedder.encode(alias_q, batch_size=64, convert_to_numpy=True, normalize_embeddings=True)
+        A = embedder.encode(alias_q, batch_size=64, show_progress_bar=False, convert_to_numpy=True, normalize_embeddings=True)
         alias_sim = (S @ A.T).max(axis=1)
     if facet_q:
-        F = embedder.encode(facet_q, batch_size=64, convert_to_numpy=True, normalize_embeddings=True)
+        F = embedder.encode(facet_q, batch_size=64, show_progress_bar=False, convert_to_numpy=True, normalize_embeddings=True)
         facet_sim = (S @ F.T).max(axis=1)
     base = np.maximum(alias_sim, facet_sim)
     bonus = np.array([_lexical_bonus(s, facet_bonus_terms) for s in sentences], dtype=np.float32)
@@ -118,11 +118,11 @@ def build_queries(product_aliases: List[str], facet_terms_flat: List[str]) -> Li
 def score_relevance(sentences: List[str], queries: List[str], embedder, facet_bonus_terms: List[str]) -> np.ndarray:
     if not sentences:
         return np.array([])
-    S = embedder.encode(sentences, batch_size=256, convert_to_numpy=True, normalize_embeddings=True)
+    S = embedder.encode(sentences, batch_size=256, show_progress_bar=False, convert_to_numpy=True, normalize_embeddings=True)
     if not queries:
         base = np.zeros(len(sentences), dtype=np.float32)
     else:
-        Q = embedder.encode(queries, batch_size=64, convert_to_numpy=True, normalize_embeddings=True)
+        Q = embedder.encode(queries, batch_size=64, show_progress_bar=False, convert_to_numpy=True, normalize_embeddings=True)
         base = (S @ Q.T).max(axis=1)
     bonus = np.array([_lexical_bonus(s, facet_bonus_terms) for s in sentences], dtype=np.float32)
     return base + bonus
