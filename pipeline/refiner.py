@@ -79,6 +79,69 @@ def route_to_facets(
         top1.append(pairs[0][0] if pairs else "")
     return top1, topk
 
+def apply_facet_routing(
+    df: pd.DataFrame,
+    clause_embs: np.ndarray,
+    facets: List[Facet],
+    *,
+    top_k: int = 2,
+    threshold: float = 0.32,
+) -> pd.DataFrame:
+    """Fill facet_top1/topk for *df* using cosine similarity against *facets*.
+
+    Existing annotations are preserved; only missing/blank entries are replaced.
+    """
+    if not facets or df.empty:
+        return df
+
+    emb = np.asarray(clause_embs, dtype=np.float32)
+    if emb.ndim != 2:
+        raise ValueError("clause_embs must be a 2-D array")
+    emb = _normalize_rows(emb)
+
+    top1_vals, topk_vals = route_to_facets(
+        emb,
+        facets,
+        top_k=top_k,
+        score_threshold=float(threshold),
+    )
+
+    top1_series = pd.Series(
+        [val if val else None for val in top1_vals],
+        index=df.index,
+        dtype=object,
+    )
+    topk_series = pd.Series(
+        [json.dumps(pairs, ensure_ascii=False) if pairs else None for pairs in topk_vals],
+        index=df.index,
+        dtype=object,
+    )
+
+    out = df.copy()
+
+    if "facet_top1" in out.columns:
+        existing = out["facet_top1"]
+        needs = existing.isna() | existing.astype(str).str.strip().isin(["", "nan", "None"])
+        out.loc[needs, "facet_top1"] = top1_series.loc[needs]
+    else:
+        out["facet_top1"] = top1_series
+
+    if "facet_topk" in out.columns:
+        existing = out["facet_topk"]
+        needs = existing.isna() | existing.astype(str).str.strip().isin(["", "nan", "None", "[]", "{}"])
+        out.loc[needs, "facet_topk"] = topk_series.loc[needs]
+    else:
+        out["facet_topk"] = topk_series
+
+    mask_blank = out["facet_top1"].astype(str).str.strip().isin(["", "nan", "None"])
+    out.loc[mask_blank, "facet_top1"] = None
+    if "facet_topk" in out.columns:
+        mask_blank_k = out["facet_topk"].astype(str).str.strip().isin(["", "nan", "None"])
+        out.loc[mask_blank_k, "facet_topk"] = None
+
+    return out
+
+
 def load_facets_yml(path: str | Path, embedder):
     import yaml
     y = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
@@ -208,11 +271,36 @@ def refine_clusters(
     facet_top1, facet_topk = route_to_facets(
         clause_embs, facets, top_k=top_k_facets, score_threshold=facet_threshold
     )
-    df["facet_top1"] = facet_top1
-    df["facet_topk"] = [json.dumps(pairs, ensure_ascii=False) for pairs in facet_topk]
+    facet_top1_series = pd.Series(facet_top1, index=df.index, dtype=object)
+    facet_topk_series = pd.Series(
+        [json.dumps(pairs, ensure_ascii=False) for pairs in facet_topk],
+        index=df.index,
+        dtype=object,
+    )
+
+    if "facet_top1" in df.columns:
+        existing_top1 = df["facet_top1"].fillna("")
+        needs_top1 = existing_top1.astype(str).str.strip() == ""
+        df.loc[needs_top1, "facet_top1"] = facet_top1_series.loc[needs_top1]
+    else:
+        df["facet_top1"] = facet_top1_series
+
+    if "facet_topk" in df.columns:
+        existing_topk = df["facet_topk"].fillna("")
+        needs_topk = existing_topk.astype(str).str.strip() == ""
+        df.loc[needs_topk, "facet_topk"] = facet_topk_series.loc[needs_topk]
+    else:
+        df["facet_topk"] = facet_topk_series
 
     # Prepare refined labels default = original
     df["refined_label"] = df["cluster_label"].values
+
+    if "facet_top1" in df.columns:
+        blank_top1 = df["facet_top1"].astype(str).str.strip() == ""
+        df.loc[blank_top1, "facet_top1"] = None
+    if "facet_topk" in df.columns:
+        blank_topk = df["facet_topk"].astype(str).str.strip() == ""
+        df.loc[blank_topk, "facet_topk"] = None
 
     # Split per cluster if heterogeneous
     for cl, sub in df.groupby("cluster_label", sort=False):
@@ -231,11 +319,17 @@ def refine_clusters(
             df.loc[idx, "refined_label"] = [base * 10 + int(s) for s in sub_labels]
 
     # Stable refined cluster id within polarity namespace: prefix*1000 + ...
+    prefix_map = {"negative": 0, "neutral": 1, "positive": 2}
+    try:
+        prefix = int(stable_id_prefix)
+    except (TypeError, ValueError):
+        prefix = prefix_map.get(polarity, 0)
+
     def _mk_id(v):
         if _is_other(v, other_label_value):
-            return stable_id_prefix * 1000 + 999
+            return prefix * 1000 + 999
         vi = _safe_int(v)
-        return stable_id_prefix * 1000 + (vi if vi is not None else 999)
+        return prefix * 1000 + (vi if vi is not None else 999)
 
     df["refined_cluster_id"] = df["refined_label"].map(_mk_id)
     df["polarity"] = polarity

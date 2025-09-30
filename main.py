@@ -31,7 +31,7 @@ from pipeline.exporter import (
 )
 from pipeline.idmap import assign_stable_ids
 from pipeline.report import save_client_report
-from pipeline.refiner import load_facets_yml, refine_clusters, _normalize_rows
+from pipeline.refiner import load_facets_yml, refine_clusters, _normalize_rows, apply_facet_routing
 from utils.runmeta import write_run_manifest, write_meta_json
 
 from sentence_transformers import SentenceTransformer
@@ -76,12 +76,15 @@ def _relabel_dict(d: Dict[int, list], base: int) -> Dict[int, list]:
             new_d[base + 999] = v
     return new_d
 
-def _ensure_facet_top1(df: pd.DataFrame, *, default: str = "") -> pd.DataFrame:
+def _ensure_facet_top1(df: pd.DataFrame, *, default: str | None = None) -> pd.DataFrame:
     """Ensure a ``facet_top1`` column exists by copying from ``facet_bucket`` or filling."""
     if "facet_top1" in df.columns:
         return df
     if "facet_bucket" in df.columns:
-        return df.assign(facet_top1=df["facet_bucket"])
+        out = df.assign(facet_top1=df["facet_bucket"])
+        mask_blank = out["facet_top1"].astype(str).str.strip() == ""
+        out.loc[mask_blank, "facet_top1"] = None
+        return out
     return df.assign(facet_top1=default)
 
 # --- 유틸: 다양한 facets YAML 스키마를 표준 스키마로 정규화 ---
@@ -150,7 +153,8 @@ def run_full_pipeline(
     base_map = {"negative": 0, "neutral": 1000, "positive": 2000}
 
     # --- Refinement 준비(옵션) ---
-    refine_enabled = getattr(config, "REFINEMENT_ENABLED", True)
+    refine_enabled_cfg = getattr(config, "REFINEMENT_ENABLED", True)
+    refine_enabled = refine_enabled_cfg
     facets_obj = None
     refine_th = {
         "top_k_facets": 2,
@@ -158,50 +162,49 @@ def run_full_pipeline(
         "hetero_sil_threshold": 0.18,
         "min_cluster_size_for_split": 40,
         "max_local_k": 4,
-        "other_label_value": -1,  # 정수 노이즈 라벨 사용
+        "other_label_value": -1,
     }
     stable_id_prefix_map = getattr(
         config, "REFINEMENT_STABLE_ID", {"negative": 0, "neutral": 1, "positive": 2}
     )
 
     norm_tmp_path = None
-    if refine_enabled:
-        try:
-            facets_path = Path(
-                facets_path_override or getattr(config, "REFINEMENT_FACETS_PATH", "rules/facets.yml")
-            )
-            thresholds_path = Path(
-                thresholds_path_override or getattr(config, "REFINEMENT_THRESHOLDS_PATH", "rules/thresholds.yml")
-            )
-            logging.info("   Refinement config → facets=%s | thresholds=%s", facets_path, thresholds_path)
+    try:
+        facets_path = Path(
+            facets_path_override or getattr(config, "REFINEMENT_FACETS_PATH", "rules/facets.yml")
+        )
+        thresholds_path = Path(
+            thresholds_path_override or getattr(config, "REFINEMENT_THRESHOLDS_PATH", "rules/thresholds.yml")
+        )
+        logging.info("   Refinement config -> facets=%s | thresholds=%s", facets_path, thresholds_path)
 
-            device_arg = getattr(config, "DEVICE", None)
-            facet_embedder = SentenceTransformer(config.MODEL_NAME, device=device_arg)
+        device_arg = getattr(config, "DEVICE", None)
+        facet_embedder = SentenceTransformer(config.MODEL_NAME, device=device_arg)
 
-            # 스키마 정규화 + 로드
-            facets_obj, facet_names, norm_tmp_path = _load_facets_forgiving(facets_path, facet_embedder)
+        facets_obj, facet_names, norm_tmp_path = _load_facets_forgiving(facets_path, facet_embedder)
 
-            # 임계치 로드
-            with thresholds_path.open("r", encoding="utf-8") as f:
-                _y = yaml.safe_load(f) or {}
-                refine_th.update((_y.get("refinement") or {}))
+        with thresholds_path.open("r", encoding="utf-8") as f:
+            config_payload = yaml.safe_load(f) or {}
+            refine_th.update((config_payload.get("refinement") or {}))
 
-            # 안전한 로그(객체 길이 대신 버킷 이름 사용)
-            head = ", ".join(facet_names[:8]) + ("…" if len(facet_names) > 8 else "")
-            logging.info("   ✓ Refinement loaded: %d buckets → %s", len(facet_names), head)
+        head = ", ".join(facet_names[:8]) + ("..." if len(facet_names) > 8 else "")
+        logging.info("   Refinement assets loaded: %d buckets -> %s", len(facet_names), head)
 
-        except Exception:
-            logging.exception("   ⚠️ Refinement disabled (init failed). Check facets/thresholds YAML & schema.")
-            refine_enabled = False
-        finally:
-            # 임시 파일 정리(필요 시 주석 처리)
-            if norm_tmp_path and norm_tmp_path.exists():
-                try:
-                    norm_tmp_path.unlink(missing_ok=True)
-                except Exception:
-                    pass
-    else:
-        logging.info("   ℹ️ Refinement is disabled by config.")
+    except Exception:
+        logging.exception("   WARNING Refinement disabled (init failed). Check facets/thresholds YAML & schema.")
+        facets_obj = None
+        refine_enabled = False
+    finally:
+        if norm_tmp_path and norm_tmp_path.exists():
+            try:
+                norm_tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    if not refine_enabled_cfg:
+        logging.info("   Refinement is disabled by config.")
+
+    refine_enabled = refine_enabled_cfg and refine_enabled and (facets_obj is not None)
 
     # --- 파일 루프 ---
     for idx, file_path in enumerate(input_files, start=1):
@@ -446,11 +449,23 @@ def run_full_pipeline(
             kw_off = _relabel_dict(kw, base)
 
             if refined_df is not None:
-                refined_out = refined_df.copy()
-                refined_out["cluster_label"] = labels_off  # offest만 덮어씀 (분류 컬럼은 그대로 유지)
-                combined_clause_df_list.append(refined_out)
+                clause_frame = refined_df.copy()
+                clause_frame["cluster_label"] = labels_off  # offset 적용
+                if "polarity" not in clause_frame.columns:
+                    clause_frame["polarity"] = pol
             else:
-                combined_clause_df_list.append(sub_df.assign(cluster_label=labels_off, polarity=pol))
+                clause_frame = sub_df.assign(cluster_label=labels_off, polarity=pol)
+
+            if facets_obj is not None:
+                clause_frame = apply_facet_routing(
+                    clause_frame,
+                    clause_embs=embeddings,
+                    facets=facets_obj,
+                    top_k=int(refine_th.get("top_k_facets", 2)),
+                    threshold=float(refine_th.get("facet_threshold", 0.32)),
+                )
+
+            combined_clause_df_list.append(clause_frame)
 
             combined_reps.update(reps_off)
             combined_kw.update(kw_off)
@@ -475,11 +490,17 @@ def run_full_pipeline(
             has_fb = "facet_bucket" in combined_clause_df.columns
 
         logging.info("   [CHECK] combined_clause_df cols=%s", sorted(list(combined_clause_df.columns)))
-        logging.info(
-            "   [CHECK] facet_top1=%s facet_bucket=%s",
-            f"{has_f1} (nnz={combined_clause_df['facet_top1'].notna().sum()})" if has_f1 else False,
-            f"{has_fb} (nnz={combined_clause_df['facet_bucket'].notna().sum()})" if has_fb else False,
-        )
+        total_rows = len(combined_clause_df)
+        if has_f1:
+            non_null = int(combined_clause_df["facet_top1"].notna().sum())
+            non_blank = int(
+                combined_clause_df["facet_top1"].dropna().astype(str).str.strip().replace({"nan": "", "None": ""}).ne("").sum()
+            )
+            logging.info("   [CHECK] facet_top1 non_null=%d non_blank=%d / total=%d", non_null, non_blank, total_rows)
+        else:
+            logging.warning("   [CHECK] facet_top1 column not found")
+        if has_fb:
+            logging.info("   [CHECK] facet_bucket nnz=%d / total=%d", int(combined_clause_df["facet_bucket"].notna().sum()), total_rows)
 
         # --- 저장 ---
         if combined_clause_df_list:
@@ -488,7 +509,12 @@ def run_full_pipeline(
             has_facet = "facet_top1" in combined_clause_df.columns
             nnz = int(combined_clause_df["facet_top1"].notna().sum()) if has_facet else 0
             logging.info("   [CHECK] combined_clause_df cols=%s", sorted(list(combined_clause_df.columns)))
-            logging.info("   [CHECK] facet_top1 present=%s non_null=%d of %d", has_facet, nnz, int(combined_clause_df.shape[0]))
+            total_after = int(combined_clause_df.shape[0])
+            non_null = int(combined_clause_df["facet_top1"].notna().sum()) if has_facet else 0
+            non_blank = int(
+                combined_clause_df["facet_top1"].dropna().astype(str).str.strip().replace({"nan": "", "None": ""}).ne("").sum()
+            ) if has_facet else 0
+            logging.info("   [CHECK] facet_top1 present=%s non_null=%d non_blank=%d / total=%d", has_facet, non_null, non_blank, total_after)
 
             # 작은 샘플 CSV (보고서 전에 눈으로 바로 봄)
             keep_cols = [c for c in ["review_id","polarity","cluster_label","refined_cluster_id","facet_top1","confidence","clause"] if c in combined_clause_df.columns]

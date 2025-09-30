@@ -249,6 +249,17 @@ def save_client_report(
     """
     clause_w_meta = _ensure_meta_join(clause_df, raw_df)
 
+    facet_col = "facet_bucket" if "facet_bucket" in clause_w_meta.columns else ("facet_top1" if "facet_top1" in clause_w_meta.columns else None)
+    if facet_col is None:
+        raise ValueError("No facet column found for report (need facet_bucket or facet_top1)")
+    clause_w_meta["분류"] = clause_w_meta[facet_col]
+    clause_w_meta.loc[
+        clause_w_meta["분류"].astype(str).str.strip().isin(["", "nan", "None"]),
+        "분류",
+    ] = None
+    if clause_w_meta["분류"].isna().all():
+        raise ValueError(f"Facet column '{facet_col}' is entirely NaN — check route_facets() and YAML threshold")
+
     rep_tbl = _build_rep_summary_table(clause_w_meta, reps)
     plat_tbl = _build_platform_block(clause_w_meta, raw_df)
     year_tbl = _build_year_ratio(raw_df)
