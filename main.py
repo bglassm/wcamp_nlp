@@ -172,16 +172,32 @@ def _load_facets_forgiving(facets_path: Path, facet_embedder):
                 len(facets_list),
                 [str(d.get("name") or d.get("id")) for d in facets_list[:3]])
 
-    # 임시 정규화 YAML 생성
-    tmp = tempfile.NamedTemporaryFile("w", delete=False, suffix=".yml", encoding="utf-8")
-    yaml.safe_dump({"buckets": facets_list}, tmp, allow_unicode=True, sort_keys=False)
-    tmp_path = Path(tmp.name)
-    tmp.close()
+    def _try_build_facets(payload, tag):
+        tmp = tempfile.NamedTemporaryFile("w", delete=False, suffix=".yml", encoding="utf-8")
+        yaml.safe_dump(payload, tmp, allow_unicode=True, sort_keys=False)
+        tmp_path = Path(tmp.name)
+        tmp.close()
+        try:
+            obj = load_facets_yml(str(tmp_path), facet_embedder)
+            if obj:
+                logger.info("[FACETS] load_facets_yml OK via schema=%s", tag)
+                return obj, tmp_path
+            else:
+                logger.warning("[FACETS] schema=%s yielded empty from load_facets_yml; will retry with fallback", tag)
+                return None, tmp_path
+        except Exception as e:
+            logger.warning("[FACETS] schema=%s raised %s; will retry with fallback", tag, e)
+            return None, tmp_path
 
-    facets_obj = load_facets_yml(str(tmp_path), facet_embedder)
+    facets_obj, tmp_path = _try_build_facets({"buckets": facets_list}, tag="buckets")
     if not facets_obj:
-        logger.error("[FACETS] load_facets_yml returned empty/None for %s", _abs_path)
-        raise ValueError(f"No facets loaded after normalization ? check path/schema: {facets_path}")
+        facets_obj, tmp_path2 = _try_build_facets({"facets": facets_list}, tag="facets")
+        tmp_path = tmp_path2
+
+    if not facets_obj:
+        logger.error("[FACETS] load_facets_yml returned empty/None for %s (after both schemas)", _abs_path)
+        raise ValueError(f"No facets loaded after normalization — check path/schema: {facets_path}")
+
     bucket_names = [d.get("name", f"F{i}") for i, d in enumerate(facets_list)]
     logger.info("[FACETS] bucket_names(head)=%s", bucket_names[:5])
     return facets_obj, bucket_names, tmp_path
