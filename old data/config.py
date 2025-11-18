@@ -31,25 +31,10 @@ REVIEW_ID_COL    = "review_id"
 # ───────────────────────────────────────────────────────────────────────────
 # 2. Embedding
 # ───────────────────────────────────────────────────────────────────────────
-# 임베딩 설정 (backend: local | openai)
-embed = {
-    "backend": "local",                 # "local" | "openai"
-    "model": "jhgan/ko-sbert-sts",      # local: SBERT model name, openai: text-embedding-3-small/large
-    "api_base": "https://api.openai.com/v1",
-    "batch_size": 128,
-    "device": "cuda",                   # local 전용
-    "max_retries": 3,                   # openai 전용
-    "timeout_sec": 30,                  # openai 전용
-    "cache_dir": "output/cache/embeddings",
-}
-
-# 편의를 위해 dict를 object처럼 접근할 수 있도록 임시 클래스 정의
-class ConfigObject:
-    def __init__(self, dictionary):
-        for key, value in dictionary.items():
-            setattr(self, key, value)
-
-embed = ConfigObject(embed)
+# 한국어 특화 SBERT (사용자 확인값)
+MODEL_NAME = "jhgan/ko-sbert-sts"
+BATCH_SIZE = 128
+DEVICE     = "cuda"
 
 # ───────────────────────────────────────────────────────────────────────────
 # 3. Clause splitting (절 분할)
@@ -77,7 +62,7 @@ CLAUSE_CONNECTIVES = [
 # PyABSA BERT-SPC 멀티링궐 모델 (긍정/중립/부정)
 ABSA_MODEL_NAME = "multilingual"
 ABSA_BATCH_SIZE = 32
-# device: 기존 config.embed.device 사용
+# device: 기존 DEVICE 사용
 
 # ───────────────────────────────────────────────────────────────────────────
 # 5. UMAP  (note: 실제 실행은 tuner.get_cluster_params() 결과를 우선 사용)

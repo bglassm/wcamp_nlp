@@ -36,7 +36,7 @@ from pipeline.loader import load_reviews
 from pipeline.preprocess import preprocess_reviews
 from pipeline.clause_splitter import split_clauses
 from pipeline.absa import classify_clauses
-from pipeline.embedder import embed_reviews
+from pipeline.embedder import get_embedder, CachingEmbedder # embed_reviews is now deprecated
 from pipeline.reducer import reduce_embeddings
 from pipeline.clusterer import cluster_embeddings, evaluate_clusters
 from pipeline.tuner import get_cluster_params
@@ -52,7 +52,7 @@ from pipeline.report import save_client_report
 from pipeline.refiner import load_facets_yml, refine_clusters, _normalize_rows, apply_facet_routing
 from utils.runmeta import write_run_manifest, write_meta_json
 
-from sentence_transformers import SentenceTransformer
+# from sentence_transformers import SentenceTransformer # Not needed here anymore, moved to embedder.py
 
 try:
     import yaml
@@ -203,6 +203,112 @@ def _load_facets_forgiving(facets_path: Path, facet_embedder):
     return facets_obj, bucket_names, tmp_path
 
 # --- 메인 파이프라인 ---
+def run_embed_pipeline(
+    input_files: List[Path],
+    output_dir: Path,
+    *,
+    save_stem: str,
+) -> None:
+    """
+    임베딩만 생성하고 캐시 파일로 저장하는 파이프라인.
+    """
+    total = len(input_files)
+    logging.info("▶ Starting embedding-only pipeline for %d files", total)
+    
+    for i, input_file in enumerate(input_files):
+        product_id = save_stem
+        logging.info("--- File %d/%d: %s (Product: %s) ---", i + 1, total, input_file.name, product_id)
+        
+        # 1. 데이터 로드 및 전처리
+        df_reviews = load_reviews(input_file)
+        df_reviews = preprocess_reviews(df_reviews)
+        
+        # 2. 절 분할 및 ABSA
+        df_clauses = split_clauses(df_reviews)
+        df_clauses = classify_clauses(df_clauses)
+        
+        # 3. 임베딩
+        logging.info("--- 3. Embedding ---")
+        
+        # 3-1. 임베더 초기화 (캐싱 포함)
+        embedder: CachingEmbedder = get_embedder(config)
+        
+        # 3-2. 임베딩 실행 (캐싱 로직 내장)
+        # clause_id 생성
+        rid_col = getattr(config, "REVIEW_ID_COL", "review_id")
+        df_clauses["clause_idx"] = df_clauses.groupby(rid_col).cumcount()
+        
+        # clause_id 생성: {product_id}_{review_id}_{clause_idx}
+        df_clauses["clause_id"] = df_clauses.apply(
+            lambda row: f"{product_id}_{row[rid_col]}_{row['clause_idx']}", axis=1
+        )
+        
+        embedder.embed(
+            texts=df_clauses["clause"].tolist(),
+            clause_ids=df_clauses["clause_id"].tolist(),
+            product_id=product_id,
+        )
+        
+        # 임베딩 결과는 CachingEmbedder 내부에서 캐시 파일로 저장됨.
+        # 여기서는 임베딩 벡터를 데이터프레임에 추가할 필요 없이 종료.
+        logging.info("✅ Embedding complete and cached for product: %s", product_id)
+        
+    logging.info("▶ Embedding-only pipeline finished.")
+
+
+def run_full_pipeline((
+    input_files: List[Path],
+    output_dir: Path,
+    *,
+    save_stem: str,
+) -> None:
+    """
+    임베딩만 생성하고 캐시 파일로 저장하는 파이프라인.
+    """
+    total = len(input_files)
+    logging.info("▶ Starting embedding-only pipeline for %d files", total)
+    
+    for i, input_file in enumerate(input_files):
+        product_id = save_stem
+        logging.info("--- File %d/%d: %s (Product: %s) ---", i + 1, total, input_file.name, product_id)
+        
+        # 1. 데이터 로드 및 전처리
+        df_reviews = load_reviews(input_file)
+        df_reviews = preprocess_reviews(df_reviews)
+        
+        # 2. 절 분할 및 ABSA
+        df_clauses = split_clauses(df_reviews)
+        df_clauses = classify_clauses(df_clauses)
+        
+        # 3. 임베딩
+        logging.info("--- 3. Embedding ---")
+        
+        # 3-1. 임베더 초기화 (캐싱 포함)
+        embedder: CachingEmbedder = get_embedder(config)
+        
+        # 3-2. 임베딩 실행 (캐싱 로직 내장)
+        # clause_id 생성
+        rid_col = getattr(config, "REVIEW_ID_COL", "review_id")
+        df_clauses["clause_idx"] = df_clauses.groupby(rid_col).cumcount()
+        
+        # clause_id 생성: {product_id}_{review_id}_{clause_idx}
+        df_clauses["clause_id"] = df_clauses.apply(
+            lambda row: f"{product_id}_{row[rid_col]}_{row['clause_idx']}", axis=1
+        )
+        
+        embedder.embed(
+            texts=df_clauses["clause"].tolist(),
+            clause_ids=df_clauses["clause_id"].tolist(),
+            product_id=product_id,
+        )
+        
+        # 임베딩 결과는 CachingEmbedder 내부에서 캐시 파일로 저장됨.
+        # 여기서는 임베딩 벡터를 데이터프레임에 추가할 필요 없이 종료.
+        logging.info("✅ Embedding complete and cached for product: %s", product_id)
+        
+    logging.info("▶ Embedding-only pipeline finished.")
+
+
 def run_full_pipeline(
     input_files: List[Path],
     output_dir: Path,
@@ -246,8 +352,41 @@ def run_full_pipeline(
         )
         logging.info("   Refinement config -> facets=%s | thresholds=%s", facets_path, thresholds_path)
 
-        device_arg = getattr(config, "DEVICE", None)
-        facet_embedder = SentenceTransformer(config.MODEL_NAME, device=device_arg)
+        # Refinement/Facet embedder uses the same configuration as the main embedder
+        # It must be a LocalEmbedder for SentenceTransformer compatibility in load_facets_yml
+        # We assume the facet embedding is always local SBERT for compatibility with existing code.
+        
+        # Initialize the facet embedder (must be LocalEmbedder for SentenceTransformer)
+        # If the main embedder is OpenAIEmbedder, we need to initialize a separate LocalEmbedder for facets.
+        if config.embed.backend != "local":
+            from pipeline.embedder import LocalEmbedder
+            # Use the main config for local embedder init, but override backend to 'local'
+            class TempConfig:
+                class Embed:
+                    backend = "local"
+                    model = "jhgan/ko-sbert-sts" # Default SBERT model
+                    device = config.embed.device
+                    batch_size = config.embed.batch_size
+                    api_base = config.embed.api_base
+                    max_retries = config.embed.max_retries
+                    timeout_sec = config.embed.timeout_sec
+                    cache_dir = config.embed.cache_dir
+                embed = Embed()
+            
+            # Initialize a temporary LocalEmbedder to get the SentenceTransformer model
+            facet_embedder = LocalEmbedder(TempConfig()).model
+            logger.info("✅ Initialized separate LocalEmbedder for facet embedding.")
+        else:
+            # If main embedder is local, initialize it once and reuse the model
+            # We need to call get_embedder to ensure the model is loaded and cached
+            facet_embedder = get_embedder(config).embedder.model
+            logger.info("✅ Reusing main LocalEmbedder model for facet embedding.")
+            
+        # Now facet_embedder is a SentenceTransformer instance, as required by _load_facets_forgiving
+        # device_arg = getattr(config, "DEVICE", None)
+        # facet_embedder = SentenceTransformer(config.MODEL_NAME, device=device_arg) # Old code removed
+        
+        # --- Refinement/Facet embedder initialization end ---
 
         facets_obj, facet_names, norm_tmp_path = _load_facets_forgiving(facets_path, facet_embedder)
 
@@ -365,29 +504,30 @@ def run_full_pipeline(
             umap_p, hdbscan_p = tuner_params["umap"], tuner_params["hdbscan"]
 
             # 3) Embedding
+            # 3) Embedding
             emb_t0 = time.time()
-            emb_cache = out_dir / "cache" / f"{stem_effective}_{pol}_{config.MODEL_NAME.replace('/', '_')}.npy"
-            if resume and emb_cache.exists():
-                try:
-                    embeddings = np.load(emb_cache)
-                    if embeddings.shape[0] != len(texts):
-                        raise ValueError("shape mismatch — cache invalid")
-                    logging.info(" → [%s] Embeddings cache hit %s", pol, emb_cache.name)
-                except Exception:
-                    embeddings = embed_reviews(
-                        texts, model_name=config.MODEL_NAME,
-                        batch_size=config.BATCH_SIZE, device=config.DEVICE,
-                    )
-                    np.save(emb_cache, embeddings)
-            else:
-                embeddings = embed_reviews(
-                    texts, model_name=config.MODEL_NAME,
-                    batch_size=config.BATCH_SIZE, device=config.DEVICE,
-                )
-                try:
-                    np.save(emb_cache, embeddings)
-                except Exception:
-                    pass
+            
+            # 3-1. 임베더 초기화 (캐싱 포함)
+            embedder: CachingEmbedder = get_embedder(config)
+            
+            # 3-2. 임베딩 실행 (캐싱 로직 내장)
+            # clause_id 생성
+            rid_col = getattr(config, "REVIEW_ID_COL", "review_id")
+            sub_df["clause_idx"] = sub_df.groupby(rid_col).cumcount()
+            
+            # clause_id 생성: {product_id}_{review_id}_{clause_idx}
+            sub_df["clause_id"] = sub_df.apply(
+                lambda row: f"{stem_effective}_{row[rid_col]}_{row['clause_idx']}", axis=1
+            )
+            
+            # 기존 numpy cache 로직은 제거하고 CachingEmbedder를 사용
+            embeddings = embedder.embed(
+                texts=sub_df["clause"].tolist(),
+                clause_ids=sub_df["clause_id"].tolist(),
+                product_id=stem_effective,
+            )
+            
+            # embeddings는 numpy array로 반환됨
             logging.info("      → [%s] Embeddings shape: %s (%.1fs)", pol, embeddings.shape, time.time() - emb_t0)
 
             # 4) UMAP reduction
