@@ -104,6 +104,7 @@ class OpenAIEmbedder(Embedder):
         self.timeout_sec = cfg.embed.timeout_sec
         self.api_base = cfg.embed.api_base
 
+        load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env")
         api_key = os.environ.get("OPENAI_API_KEY")
         if not api_key:
             raise ValueError("OPENAI_API_KEY 환경 변수가 설정되지 않았습니다.")
@@ -113,11 +114,6 @@ class OpenAIEmbedder(Embedder):
             base_url=self.api_base,
             timeout=self.timeout_sec
         )
-        # Load .env file
-        load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env")
-        # Re-check API key after loading .env
-        if not os.environ.get("OPENAI_API_KEY"):
-            raise ValueError("OPENAI_API_KEY 환경 변수가 설정되지 않았습니다. .env 파일을 확인하세요.")
         logger.info("✅ OpenAIEmbedder initialized with model: %s", self.model_name)
 
     def embed(self, texts: List[str]) -> np.ndarray:
