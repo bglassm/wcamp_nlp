@@ -1,7 +1,7 @@
 import logging
 import os
 import time
-from typing import List, Union, Protocol
+from typing import List, Union, Protocol, Optional
 import openai
 from openai import OpenAI, APIError, RateLimitError, APIConnectionError
 import torch
@@ -17,6 +17,28 @@ import config # Assuming config is available in the environment
 
 # Internal cache to reuse loaded models
 _MODEL_CACHE: dict[str, SentenceTransformer] = {}
+
+
+def _get_model(model_name: str, device: Optional[str]) -> SentenceTransformer:
+    """Backward-compatible helper to lazily load and cache SBERT models.
+
+    The merge/keyword modules historically imported ``_get_model`` directly.
+    Instead of forcing every caller to instantiate ``LocalEmbedder`` (which also
+    wraps caching and device selection) we keep exposing this lightweight helper
+    so the legacy import continues to work.  The helper simply mirrors the logic
+    from ``LocalEmbedder._get_model`` but lives at module scope so that
+    ``pipeline.mergy`` and others can reuse the same cache without duplicating
+    code.
+    """
+
+    cache_key = f"{model_name}@{device or 'auto'}"
+    if cache_key not in _MODEL_CACHE:
+        logger.info("⬇️ Loading SBERT model %s on %s", model_name, device or "auto")
+        kwargs = {}
+        if device:
+            kwargs["device"] = device
+        _MODEL_CACHE[cache_key] = SentenceTransformer(model_name, **kwargs)
+    return _MODEL_CACHE[cache_key]
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -57,18 +79,8 @@ class LocalEmbedder(Embedder):
             self.device = "cpu"
 
         # Load / cache model
-        self.model = self._get_model(self.model_name, self.device)
+        self.model = _get_model(self.model_name, self.device)
         logger.info("✅ LocalEmbedder initialized with model: %s on %s", self.model_name, self.device)
-
-    def _get_model(self, model_name: str, device: str) -> SentenceTransformer:
-        """
-        Load & cache the SBERT model; reuse across calls to avoid re-download.
-        """
-        key = f"{model_name}@{device}"
-        if key not in _MODEL_CACHE:
-            logger.info("⬇️ Loading SBERT model %s on %s", model_name, device)
-            _MODEL_CACHE[key] = SentenceTransformer(model_name, device=device)
-        return _MODEL_CACHE[key]
 
     def embed(self, texts: List[str]) -> np.ndarray:
         """
