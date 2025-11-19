@@ -3,7 +3,7 @@
 # - Signature stays the same: split_clauses(df, text_col="review", connectives=None, id_col="review_id")
 # - Greedy segmentation using connectors + semantic/topic shift gating
 # - Avoids conditional splits ("~라면/다면/면") by default
-# - Optional embedding-based gating (config.SMART_SPLIT_USE_EMBEDDING)
+# - Optional embedding-based gating (config.clause_split.use_semantic_gating)
 
 from __future__ import annotations
 from typing import List, Tuple, Optional
@@ -55,21 +55,87 @@ def _jaccard(a: List[str], b: List[str]) -> float:
 
 
 _model = None
+_semantic_model_initialized = False
+_semantic_gating_enabled = False
+
+
+def _clause_split_config():
+    return getattr(config, "clause_split", None)
+
+
+def _resolve_semantic_model_name() -> Optional[str]:
+    cfg = _clause_split_config()
+    if cfg and getattr(cfg, "semantic_model", None):
+        return cfg.semantic_model
+    semantic_cfg = getattr(config, "semantic", None)
+    if semantic_cfg and getattr(semantic_cfg, "model", None):
+        return semantic_cfg.model
+    return None
+
+
+def _resolve_semantic_device() -> Optional[str]:
+    cfg = _clause_split_config()
+    if cfg and getattr(cfg, "device", None):
+        return cfg.device
+    semantic_cfg = getattr(config, "semantic", None)
+    if semantic_cfg and getattr(semantic_cfg, "device", None):
+        return semantic_cfg.device
+    return getattr(config, "DEVICE", None)
+
+
+def _ensure_semantic_model() -> bool:
+    """Load the semantic model exactly once if gating is enabled."""
+
+    global _model, _semantic_model_initialized, _semantic_gating_enabled
+
+    if _semantic_model_initialized:
+        return _semantic_gating_enabled and _model is not None
+
+    cfg = _clause_split_config()
+    use_semantic = getattr(cfg, "use_semantic_gating", getattr(config, "SMART_SPLIT_USE_EMBEDDING", True))
+
+    if not use_semantic:
+        logger.info("Clause splitter semantic model disabled; falling back to rule-based splitting only.")
+        _semantic_model_initialized = True
+        _semantic_gating_enabled = False
+        _model = None
+        return False
+
+    model_name = _resolve_semantic_model_name()
+    if not model_name:
+        logger.warning("Clause splitter semantic model disabled; falling back to rule-based splitting only. Reason: missing config.clause_split.semantic_model")
+        _semantic_model_initialized = True
+        _semantic_gating_enabled = False
+        _model = None
+        return False
+
+    try:
+        from sentence_transformers import SentenceTransformer
+
+        device = _resolve_semantic_device()
+        logger.info("Clause splitter semantic model: %s", model_name)
+        if device:
+            logger.info("Clause splitter semantic device: %s", device)
+        _model = SentenceTransformer(model_name, device=device)
+        _semantic_model_initialized = True
+        _semantic_gating_enabled = True
+        return True
+    except Exception as exc:
+        logger.warning(
+            "Clause splitter semantic model disabled; falling back to rule-based splitting only. Error: %s",
+            exc,
+        )
+        _semantic_model_initialized = True
+        _semantic_gating_enabled = False
+        _model = None
+        return False
 
 def _cosine_distance(a: str, b: str) -> float:
-    """Cosine distance (1 - cos sim) using SBERT if enabled, else 0.0.
-    Lazy-loads the model once. Normalizes embeddings.
-    """
-    if not getattr(config, "SMART_SPLIT_USE_EMBEDDING", True):
+    """Cosine distance (1 - cos sim) using SBERT if enabled, else 0.0."""
+
+    if not _ensure_semantic_model():
         return 0.0
-    global _model
-    if _model is None:
-        try:
-            from sentence_transformers import SentenceTransformer
-            _model = SentenceTransformer(config.MODEL_NAME, device=getattr(config, "DEVICE", None))
-        except Exception as e:
-            logger.warning("Embedding model load failed in clause splitter: %s", e)
-            return 0.0
+
     vec = _model.encode([a, b], convert_to_numpy=True, normalize_embeddings=True, batch_size=2, show_progress_bar=False)
     return float(1.0 - np.dot(vec[0], vec[1]))
 
@@ -201,6 +267,7 @@ def split_clauses(
         return pd.DataFrame(rows)
 
     # Smart path
+    _ensure_semantic_model()
     for rid, text in zip(df[id_col].tolist(), df[text_col].astype(str).tolist()):
         text = (text or "").strip()
         if not text:

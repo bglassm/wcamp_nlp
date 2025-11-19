@@ -43,13 +43,49 @@ embed = {
     "cache_dir": "output/cache/embeddings",
 }
 
+clause_split = {
+    "semantic_model": "jhgan/ko-sbert-sts",  # 절 분할 전용 SBERT 모델
+    "use_semantic_gating": True,
+}
+
+# SBERT 기반 helper 작업(절 분할, 클러스터 병합 등)에 사용할 공통 semantic 설정
+semantic = {
+    "model": "jhgan/ko-sbert-sts",
+    "device": "cuda",
+}
+
+clause_split = {
+    # 지정되지 않으면 semantic.model 사용
+    "semantic_model": None,
+    "use_semantic_gating": True,
+}
+
+merge = {
+    # 지정되지 않으면 semantic.model / semantic.device 사용
+    "semantic_model": None,
+    "device": None,
+}
+
 # 편의를 위해 dict를 object처럼 접근할 수 있도록 임시 클래스 정의
 class ConfigObject:
     def __init__(self, dictionary):
         for key, value in dictionary.items():
             setattr(self, key, value)
 
+semantic = ConfigObject(semantic)
+
+if clause_split["semantic_model"] is None:
+    clause_split["semantic_model"] = semantic.model
+clause_split = ConfigObject(clause_split)
+
+if merge["semantic_model"] is None:
+    merge["semantic_model"] = semantic.model
+if merge["device"] is None:
+    merge["device"] = semantic.device
+merge = ConfigObject(merge)
+
 embed = ConfigObject(embed)
+clause_split = ConfigObject(clause_split)
 
 # ---------------------------------------------------------------------------
 # Backward-compatibility aliases
