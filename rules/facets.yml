@@ -1,6 +1,6 @@
 buckets:
-- id: sweetness
-  name: sweetness
+- id: taste
+  name: taste
   desc: 단맛/당도 전반(무맛/싱거움 포함)
 - id: texture
   name: texture

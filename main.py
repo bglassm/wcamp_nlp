@@ -215,8 +215,10 @@ def run_embed_pipeline(
     total = len(input_files)
     logging.info("▶ Starting embedding-only pipeline for %d files", total)
     
+    embedder: CachingEmbedder = get_embedder(config)
+
     for i, input_file in enumerate(input_files):
-        product_id = save_stem
+        product_id = save_stem or input_file.stem
         logging.info("--- File %d/%d: %s (Product: %s) ---", i + 1, total, input_file.name, product_id)
         
         # 1. 데이터 로드 및 전처리
@@ -231,61 +233,6 @@ def run_embed_pipeline(
         logging.info("--- 3. Embedding ---")
         
         # 3-1. 임베더 초기화 (캐싱 포함)
-        embedder: CachingEmbedder = get_embedder(config)
-        
-        # 3-2. 임베딩 실행 (캐싱 로직 내장)
-        # clause_id 생성
-        rid_col = getattr(config, "REVIEW_ID_COL", "review_id")
-        df_clauses["clause_idx"] = df_clauses.groupby(rid_col).cumcount()
-        
-        # clause_id 생성: {product_id}_{review_id}_{clause_idx}
-        df_clauses["clause_id"] = df_clauses.apply(
-            lambda row: f"{product_id}_{row[rid_col]}_{row['clause_idx']}", axis=1
-        )
-        
-        embedder.embed(
-            texts=df_clauses["clause"].tolist(),
-            clause_ids=df_clauses["clause_id"].tolist(),
-            product_id=product_id,
-        )
-        
-        # 임베딩 결과는 CachingEmbedder 내부에서 캐시 파일로 저장됨.
-        # 여기서는 임베딩 벡터를 데이터프레임에 추가할 필요 없이 종료.
-        logging.info("✅ Embedding complete and cached for product: %s", product_id)
-        
-    logging.info("▶ Embedding-only pipeline finished.")
-
-
-def run_full_pipeline((
-    input_files: List[Path],
-    output_dir: Path,
-    *,
-    save_stem: str,
-) -> None:
-    """
-    임베딩만 생성하고 캐시 파일로 저장하는 파이프라인.
-    """
-    total = len(input_files)
-    logging.info("▶ Starting embedding-only pipeline for %d files", total)
-    
-    for i, input_file in enumerate(input_files):
-        product_id = save_stem
-        logging.info("--- File %d/%d: %s (Product: %s) ---", i + 1, total, input_file.name, product_id)
-        
-        # 1. 데이터 로드 및 전처리
-        df_reviews = load_reviews(input_file)
-        df_reviews = preprocess_reviews(df_reviews)
-        
-        # 2. 절 분할 및 ABSA
-        df_clauses = split_clauses(df_reviews)
-        df_clauses = classify_clauses(df_clauses)
-        
-        # 3. 임베딩
-        logging.info("--- 3. Embedding ---")
-        
-        # 3-1. 임베더 초기화 (캐싱 포함)
-        embedder: CachingEmbedder = get_embedder(config)
-        
         # 3-2. 임베딩 실행 (캐싱 로직 내장)
         # clause_id 생성
         rid_col = getattr(config, "REVIEW_ID_COL", "review_id")
@@ -322,6 +269,8 @@ def run_full_pipeline(
     total = len(input_files)
     logging.info("▶ Starting full pipeline for %d files", total)
     timestamp = datetime.now().strftime("%y%m%d_%H%M%S")
+    main_embedder: CachingEmbedder = get_embedder(config)
+    last_embed_dim: int | None = None
 
     # 폴라리티 → 오프셋 베이스
     base_map = {"negative": 0, "neutral": 1000, "positive": 2000}
@@ -372,14 +321,14 @@ def run_full_pipeline(
                     timeout_sec = config.embed.timeout_sec
                     cache_dir = config.embed.cache_dir
                 embed = Embed()
-            
+
             # Initialize a temporary LocalEmbedder to get the SentenceTransformer model
             facet_embedder = LocalEmbedder(TempConfig()).model
             logger.info("✅ Initialized separate LocalEmbedder for facet embedding.")
         else:
             # If main embedder is local, initialize it once and reuse the model
             # We need to call get_embedder to ensure the model is loaded and cached
-            facet_embedder = get_embedder(config).embedder.model
+            facet_embedder = main_embedder.embedder.model
             logger.info("✅ Reusing main LocalEmbedder model for facet embedding.")
             
         # Now facet_embedder is a SentenceTransformer instance, as required by _load_facets_forgiving
@@ -507,9 +456,6 @@ def run_full_pipeline(
             # 3) Embedding
             emb_t0 = time.time()
             
-            # 3-1. 임베더 초기화 (캐싱 포함)
-            embedder: CachingEmbedder = get_embedder(config)
-            
             # 3-2. 임베딩 실행 (캐싱 로직 내장)
             # clause_id 생성
             rid_col = getattr(config, "REVIEW_ID_COL", "review_id")
@@ -521,11 +467,13 @@ def run_full_pipeline(
             )
             
             # 기존 numpy cache 로직은 제거하고 CachingEmbedder를 사용
-            embeddings = embedder.embed(
+            embeddings = main_embedder.embed(
                 texts=sub_df["clause"].tolist(),
                 clause_ids=sub_df["clause_id"].tolist(),
                 product_id=stem_effective,
             )
+            if embeddings.size:
+                last_embed_dim = int(embeddings.shape[1])
             
             # embeddings는 numpy array로 반환됨
             logging.info("      → [%s] Embeddings shape: %s (%.1fs)", pol, embeddings.shape, time.time() - emb_t0)
@@ -577,7 +525,7 @@ def run_full_pipeline(
             if getattr(config, "ENABLE_CLUSTER_MERGE", False) and len(reps) >= 2:
                 merge_map, merged_reps, _ = merge_similar_clusters(
                     reps,
-                    model_name=config.MODEL_NAME,
+                    model_name=config.embed.model,
                     threshold=getattr(config, "CLUSTER_MERGE_THRESHOLD", 0.90),
                 )
                 lbls_series = pd.to_numeric(pd.Series(labels_raw), errors="coerce").fillna(-1).astype(int)
@@ -588,7 +536,7 @@ def run_full_pipeline(
                 reps = merged_reps
 
             # 9) 키워드
-            kw = extract_keywords(reps, model_name=config.MODEL_NAME)
+            kw = extract_keywords(reps, model_name=config.embed.model)
 
             # 10) Refinement
             refined_df = None
@@ -677,6 +625,11 @@ def run_full_pipeline(
             combined_reps.update(reps_off)
             combined_kw.update(kw_off)
 
+        if not combined_clause_df_list:
+            logging.info("   ⏭️ No clauses passed threshold for any polarity — nothing to save.")
+            logging.info("✅ Completed %s (%d/%d)\n", stem_effective, idx, total)
+            continue
+
         # -- after concatenation, fail-fast if facet columns missing ------------------
         combined_clause_df = pd.concat(combined_clause_df_list, ignore_index=True)
         has_f1 = "facet_top1" in combined_clause_df.columns
@@ -709,68 +662,43 @@ def run_full_pipeline(
         if has_fb:
             logging.info("   [CHECK] facet_bucket nnz=%d / total=%d", int(combined_clause_df["facet_bucket"].notna().sum()), total_rows)
 
-        # --- 저장 ---
-        if combined_clause_df_list:
-            combined_clause_df = pd.concat(combined_clause_df_list, ignore_index=True)
-            # 결합 결과 점검: facet_top1 존재/결측 여부
-            has_facet = "facet_top1" in combined_clause_df.columns
-            nnz = int(combined_clause_df["facet_top1"].notna().sum()) if has_facet else 0
-            logging.info("   [CHECK] combined_clause_df cols=%s", sorted(list(combined_clause_df.columns)))
-            total_after = int(combined_clause_df.shape[0])
-            non_null = int(combined_clause_df["facet_top1"].notna().sum()) if has_facet else 0
-            non_blank = int(
-                combined_clause_df["facet_top1"].dropna().astype(str).str.strip().replace({"nan": "", "None": ""}).ne("").sum()
-            ) if has_facet else 0
-            logging.info("   [CHECK] facet_top1 present=%s non_null=%d non_blank=%d / total=%d", has_facet, non_null, non_blank, total_after)
+        # 작은 샘플 CSV (보고서 전에 눈으로 바로 봄)
+        keep_cols = [c for c in ["review_id","polarity","cluster_label","refined_cluster_id","facet_top1","confidence","clause"] if c in combined_clause_df.columns]
+        combined_clause_df.head(200)[keep_cols].to_csv(out_dir / f"debug_combined_head_{stem_effective}.csv", index=False, encoding="utf-8-sig")
 
-            # 작은 샘플 CSV (보고서 전에 눈으로 바로 봄)
-            keep_cols = [c for c in ["review_id","polarity","cluster_label","refined_cluster_id","facet_top1","confidence","clause"] if c in combined_clause_df.columns]
-            combined_clause_df.head(200)[keep_cols].to_csv(out_dir / f"debug_combined_head_{stem_effective}.csv", index=False, encoding="utf-8-sig")
-
-            # Stable IDs
-            if getattr(config, "ENABLE_STABLE_IDS", True):
-                combined_clause_df, _stable_map = assign_stable_ids(
-                    combined_clause_df, combined_reps,
-                    state_path=out_dir / "_stable_ids.json",
-                    prefer_col="refined_cluster_id",
-                )
-
-            save_clustered_clauses(
-                clause_df=combined_clause_df,
-                raw_df=df,
-                keywords=combined_kw,
-                output_path=out_dir / f"{stem_effective}_clauses_clustered_{timestamp}.xlsx"
-            )
-            report_path = out_dir / f"{stem_effective}_client_report_{timestamp}.xlsx"
-            save_client_report(
-                clause_df=combined_clause_df,
-                raw_df=df,
-                reps=combined_reps,
-                output_path=report_path,
-            )
-            logging.info("      💾 client report saved → %s", report_path.name)
-
-            save_clauses_summary_json(
-                combined_clause_df,
-                reps=combined_reps,
-                kw=combined_kw,
-                output_path=out_dir / f"{stem_effective}_clauses_summary_{timestamp}.json"
+        # Stable IDs
+        if getattr(config, "ENABLE_STABLE_IDS", True):
+            combined_clause_df, _stable_map = assign_stable_ids(
+                combined_clause_df, combined_reps,
+                state_path=out_dir / "_stable_ids.json",
+                prefer_col="refined_cluster_id",
             )
 
-            # run meta
-            dim = -1
-            try:
-                if 'embeddings' in locals() and hasattr(embeddings, 'shape'):
-                    dim = int(embeddings.shape[1])
-                else:
-                    dim = SentenceTransformer(config.MODEL_NAME, device=getattr(config, "DEVICE", None))\
-                            .get_sentence_embedding_dimension()
-            except Exception:
-                pass
-            write_meta_json(out_dir / "meta.json", model_name=config.MODEL_NAME, embed_dim=dim)
-            logging.info("      💾 merged outputs saved")
-        else:
-            logging.info("   ⏭️ No clauses passed threshold for any polarity — nothing to save.")
+        save_clustered_clauses(
+            clause_df=combined_clause_df,
+            raw_df=df,
+            keywords=combined_kw,
+            output_path=out_dir / f"{stem_effective}_clauses_clustered_{timestamp}.xlsx"
+        )
+        report_path = out_dir / f"{stem_effective}_client_report_{timestamp}.xlsx"
+        save_client_report(
+            clause_df=combined_clause_df,
+            raw_df=df,
+            reps=combined_reps,
+            output_path=report_path,
+        )
+        logging.info("      💾 client report saved → %s", report_path.name)
+
+        save_clauses_summary_json(
+            combined_clause_df,
+            reps=combined_reps,
+            kw=combined_kw,
+            output_path=out_dir / f"{stem_effective}_clauses_summary_{timestamp}.json"
+        )
+
+        dim = last_embed_dim if last_embed_dim is not None else -1
+        write_meta_json(out_dir / "meta.json", model_name=config.embed.model, embed_dim=dim)
+        logging.info("      💾 merged outputs saved")
 
         logging.info("✅ Completed %s (%d/%d)\n", stem_effective, idx, total)
 
@@ -833,6 +761,28 @@ def main() -> None:
         facets_path = str(f_auto) if f_auto.exists() else facets_arg
         thr_path    = str(t_auto) if t_auto.exists() else thr_arg
         return facets_path, thr_path
+
+    def _build_relevance_embedder():
+        base_embedder = get_embedder(config).embedder
+
+        def _encode_norm(texts: List[str]) -> np.ndarray:
+            if not texts:
+                return np.empty((0, 0), dtype=np.float32)
+            arr = base_embedder.embed(list(texts))
+            return _normalize_rows(np.asarray(arr, dtype=np.float32))
+
+        class _Wrapper:
+            def __init__(self):
+                self._dim = 0
+
+            def encode(self, texts, *_, **__):
+                if not texts:
+                    return np.empty((0, self._dim), dtype=np.float32)
+                vecs = _encode_norm(list(texts))
+                self._dim = vecs.shape[1]
+                return vecs
+
+        return _Wrapper()
 
     # 로깅
     timestamp = datetime.now().strftime("%y%m%d_%H%M%S")
@@ -902,20 +852,7 @@ def main() -> None:
         if not rows:
             raise SystemExit("[community_filtered] 요약 결과가 없습니다.")
 
-        from numpy.linalg import norm as _l2norm
-        def _embed_norm(texts: List[str]) -> np.ndarray:
-            X = embed_reviews(texts, model_name=config.MODEL_NAME,
-                              batch_size=getattr(config, "BATCH_SIZE", 256),
-                              device=getattr(config, "DEVICE", None))
-            X = X.astype(np.float32)
-            n = _l2norm(X, axis=1, keepdims=True) + 1e-12
-            return X / n
-
-        class _EmbedderWrapper:
-            def encode(self, texts, batch_size=256, convert_to_numpy=True, normalize_embeddings=True):
-                return _embed_norm(list(texts))
-
-        embedder = _EmbedderWrapper()
+        embedder = _build_relevance_embedder()
         alias_q = build_alias_queries(aliases)
         facet_q = build_facet_queries(facet_terms_flat)
 
@@ -1056,22 +993,7 @@ def main() -> None:
                     logging.warning(f"[auto] 요약 결과 없음 → {f.name}, skip")
                     continue
 
-                from numpy.linalg import norm as _l2norm
-                def _embed_norm(texts: List[str]) -> np.ndarray:
-                    X = embed_reviews(
-                        texts,
-                        model_name=getattr(config, "MODEL_NAME", "model"),
-                        batch_size=getattr(config, "BATCH_SIZE", 256),
-                        device=getattr(config, "DEVICE", None),
-                    ).astype(np.float32)
-                    n = _l2norm(X, axis=1, keepdims=True) + 1e-12
-                    return X / n
-
-                class _EmbedderWrapper:
-                    def encode(self, texts, batch_size=256, convert_to_numpy=True, normalize_embeddings=True):
-                        return _embed_norm(list(texts))
-
-                embedder = _EmbedderWrapper()
+                embedder = _build_relevance_embedder()
                 alias_q = build_alias_queries(aliases)
                 facet_q = build_facet_queries(facet_terms_flat)
 
