@@ -43,11 +43,6 @@ embed = {
     "cache_dir": "output/cache/embeddings",
 }
 
-clause_split = {
-    "semantic_model": "jhgan/ko-sbert-sts",  # 절 분할 전용 SBERT 모델
-    "use_semantic_gating": True,
-}
-
 # SBERT 기반 helper 작업(절 분할, 클러스터 병합 등)에 사용할 공통 semantic 설정
 semantic = {
     "model": "jhgan/ko-sbert-sts",

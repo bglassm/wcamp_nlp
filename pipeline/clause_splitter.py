@@ -63,24 +63,27 @@ def _clause_split_config():
     return getattr(config, "clause_split", None)
 
 
-def _resolve_semantic_model_name() -> Optional[str]:
-    cfg = _clause_split_config()
-    if cfg and getattr(cfg, "semantic_model", None):
-        return cfg.semantic_model
-    semantic_cfg = getattr(config, "semantic", None)
-    if semantic_cfg and getattr(semantic_cfg, "model", None):
-        return semantic_cfg.model
-    return None
+def _resolve_semantic_settings() -> Tuple[Optional[str], Optional[str]]:
+    """Return (model_name, device) for the semantic gate."""
 
-
-def _resolve_semantic_device() -> Optional[str]:
     cfg = _clause_split_config()
-    if cfg and getattr(cfg, "device", None):
-        return cfg.device
     semantic_cfg = getattr(config, "semantic", None)
-    if semantic_cfg and getattr(semantic_cfg, "device", None):
-        return semantic_cfg.device
-    return getattr(config, "DEVICE", None)
+
+    model_name: Optional[str] = None
+    device: Optional[str] = None
+
+    if cfg:
+        model_name = getattr(cfg, "semantic_model", None)
+        device = getattr(cfg, "device", None)
+
+    if not model_name and semantic_cfg:
+        model_name = getattr(semantic_cfg, "model", None)
+    if not device and semantic_cfg:
+        device = getattr(semantic_cfg, "device", None)
+
+    if not device:
+        device = getattr(config, "DEVICE", None)
+    return model_name, device
 
 
 def _ensure_semantic_model() -> bool:
@@ -101,7 +104,7 @@ def _ensure_semantic_model() -> bool:
         _model = None
         return False
 
-    model_name = _resolve_semantic_model_name()
+    model_name, device = _resolve_semantic_settings()
     if not model_name:
         logger.warning("Clause splitter semantic model disabled; falling back to rule-based splitting only. Reason: missing config.clause_split.semantic_model")
         _semantic_model_initialized = True
@@ -112,7 +115,6 @@ def _ensure_semantic_model() -> bool:
     try:
         from sentence_transformers import SentenceTransformer
 
-        device = _resolve_semantic_device()
         logger.info("Clause splitter semantic model: %s", model_name)
         if device:
             logger.info("Clause splitter semantic device: %s", device)
