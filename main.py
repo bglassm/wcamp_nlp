@@ -453,7 +453,6 @@ def run_full_pipeline(
             umap_p, hdbscan_p = tuner_params["umap"], tuner_params["hdbscan"]
 
             # 3) Embedding
-            # 3) Embedding
             emb_t0 = time.time()
             
             # 3-2. 임베딩 실행 (캐싱 로직 내장)

@@ -33,8 +33,8 @@ REVIEW_ID_COL    = "review_id"
 # ───────────────────────────────────────────────────────────────────────────
 # 임베딩 설정 (backend: local | openai)
 embed = {
-    "backend": "local",                 # "local" | "openai"
-    "model": "jhgan/ko-sbert-sts",      # local: SBERT model name, openai: text-embedding-3-small/large
+    "backend": "openai",                 # "local" | "openai"
+    "model": "text-embedding-3-small",      # local: SBERT model name, openai: text-embedding-3-small/large
     "api_base": "https://api.openai.com/v1",
     "batch_size": 128,
     "device": "cuda",                   # local 전용
