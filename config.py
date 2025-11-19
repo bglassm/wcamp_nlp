@@ -92,6 +92,16 @@ MODEL_NAME = embed.model
 DEVICE = embed.device
 BATCH_SIZE = embed.batch_size
 
+# ---------------------------------------------------------------------------
+# Backward-compatibility aliases
+# ---------------------------------------------------------------------------
+# Several legacy modules expect these module-level attributes. Mirror the
+# values from the new ``embed`` namespace so existing imports continue to
+# work regardless of the backend (local SBERT vs. OpenAI).
+MODEL_NAME = embed.model
+DEVICE = embed.device
+BATCH_SIZE = embed.batch_size
+
 # ───────────────────────────────────────────────────────────────────────────
 # 3. Clause splitting (절 분할)
 # ───────────────────────────────────────────────────────────────────────────
