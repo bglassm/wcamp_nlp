@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import config
 import numpy as np
@@ -17,7 +17,16 @@ logger.setLevel(logging.INFO)
 kiwi = Kiwi()
 
 # Internal KeyBERT cache
-_kw_model: KeyBERT | None = None
+_kw_models: Dict[str, KeyBERT] = {}
+
+
+def _resolve_keyword_model_name(model_name: Optional[str]) -> str:
+    if model_name:
+        return model_name
+    semantic_cfg = getattr(config, "semantic", None)
+    if semantic_cfg and getattr(semantic_cfg, "model", None):
+        return semantic_cfg.model
+    return getattr(config, "MODEL_NAME", "jhgan/ko-sbert-sts")
 
 
 def _get_vectorizer() -> CountVectorizer:
@@ -54,18 +63,18 @@ def _sample_and_normalize(sents: List[str]) -> str:
     return " ".join(tokens)
 
 
-def _get_kw_model(model_name: str) -> KeyBERT:
+def _get_kw_model(model_name: Optional[str]) -> KeyBERT:
     """Load and cache a KeyBERT model."""
-    global _kw_model
-    if _kw_model is None:
-        logger.info("⬇️ Loading KeyBERT model: %s", model_name)
-        _kw_model = KeyBERT(model_name)
-    return _kw_model
+    resolved = _resolve_keyword_model_name(model_name)
+    if resolved not in _kw_models:
+        logger.info("⬇️ Loading KeyBERT model: %s", resolved)
+        _kw_models[resolved] = KeyBERT(resolved)
+    return _kw_models[resolved]
 
 
 def extract_keywords(
     cluster_reps: Dict[int, List[str]],
-    model_name: str = config.MODEL_NAME,
+    model_name: Optional[str] = None,
     top_n: int = config.CLUSTER_NAME_TOPK,
 ) -> Dict[int, List[str]]:
     """

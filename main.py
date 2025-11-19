@@ -36,7 +36,7 @@ from pipeline.loader import load_reviews
 from pipeline.preprocess import preprocess_reviews
 from pipeline.clause_splitter import split_clauses
 from pipeline.absa import classify_clauses
-from pipeline.embedder import get_embedder, CachingEmbedder # embed_reviews is now deprecated
+from pipeline.embedder import get_embedder, CachingEmbedder, _get_model # embed_reviews is now deprecated
 from pipeline.reducer import reduce_embeddings
 from pipeline.clusterer import cluster_embeddings, evaluate_clusters
 from pipeline.tuner import get_cluster_params
@@ -292,6 +292,9 @@ def run_full_pipeline(
     )
 
     norm_tmp_path = None
+    semantic_helper_model = None
+    semantic_helper_name = None
+    semantic_helper_device = None
     try:
         facets_path = Path(
             facets_path_override or getattr(config, "REFINEMENT_FACETS_PATH", "rules/facets.yml")
@@ -301,41 +304,13 @@ def run_full_pipeline(
         )
         logging.info("   Refinement config -> facets=%s | thresholds=%s", facets_path, thresholds_path)
 
-        # Refinement/Facet embedder uses the same configuration as the main embedder
-        # It must be a LocalEmbedder for SentenceTransformer compatibility in load_facets_yml
-        # We assume the facet embedding is always local SBERT for compatibility with existing code.
-        
-        # Initialize the facet embedder (must be LocalEmbedder for SentenceTransformer)
-        # If the main embedder is OpenAIEmbedder, we need to initialize a separate LocalEmbedder for facets.
-        if config.embed.backend != "local":
-            from pipeline.embedder import LocalEmbedder
-            # Use the main config for local embedder init, but override backend to 'local'
-            class TempConfig:
-                class Embed:
-                    backend = "local"
-                    model = "jhgan/ko-sbert-sts" # Default SBERT model
-                    device = config.embed.device
-                    batch_size = config.embed.batch_size
-                    api_base = config.embed.api_base
-                    max_retries = config.embed.max_retries
-                    timeout_sec = config.embed.timeout_sec
-                    cache_dir = config.embed.cache_dir
-                embed = Embed()
+        semantic_cfg = getattr(config, "semantic", None)
+        semantic_helper_name = getattr(semantic_cfg, "model", None) or getattr(config, "MODEL_NAME", "jhgan/ko-sbert-sts")
+        semantic_helper_device = getattr(semantic_cfg, "device", None) or getattr(config, "DEVICE", None)
+        logger.info("   Refinement semantic helper: %s on %s", semantic_helper_name, semantic_helper_device or "auto")
 
-            # Initialize a temporary LocalEmbedder to get the SentenceTransformer model
-            facet_embedder = LocalEmbedder(TempConfig()).model
-            logger.info("✅ Initialized separate LocalEmbedder for facet embedding.")
-        else:
-            # If main embedder is local, initialize it once and reuse the model
-            # We need to call get_embedder to ensure the model is loaded and cached
-            facet_embedder = main_embedder.embedder.model
-            logger.info("✅ Reusing main LocalEmbedder model for facet embedding.")
-            
-        # Now facet_embedder is a SentenceTransformer instance, as required by _load_facets_forgiving
-        # device_arg = getattr(config, "DEVICE", None)
-        # facet_embedder = SentenceTransformer(config.MODEL_NAME, device=device_arg) # Old code removed
-        
-        # --- Refinement/Facet embedder initialization end ---
+        facet_embedder = _get_model(semantic_helper_name, semantic_helper_device)
+        semantic_helper_model = facet_embedder
 
         facets_obj, facet_names, norm_tmp_path = _load_facets_forgiving(facets_path, facet_embedder)
 
@@ -350,6 +325,9 @@ def run_full_pipeline(
         logging.exception("   WARNING Refinement disabled (init failed). Check facets/thresholds YAML & schema.")
         facets_obj = None
         refine_enabled = False
+        semantic_helper_model = None
+        semantic_helper_name = None
+        semantic_helper_device = None
     finally:
         if norm_tmp_path and norm_tmp_path.exists():
             try:
@@ -524,7 +502,6 @@ def run_full_pipeline(
             if getattr(config, "ENABLE_CLUSTER_MERGE", False) and len(reps) >= 2:
                 merge_map, merged_reps, _ = merge_similar_clusters(
                     reps,
-                    model_name=config.embed.model,
                     threshold=getattr(config, "CLUSTER_MERGE_THRESHOLD", 0.90),
                 )
                 lbls_series = pd.to_numeric(pd.Series(labels_raw), errors="coerce").fillna(-1).astype(int)
@@ -535,7 +512,22 @@ def run_full_pipeline(
                 reps = merged_reps
 
             # 9) 키워드
-            kw = extract_keywords(reps, model_name=config.embed.model)
+            keyword_model = getattr(getattr(config, "semantic", None), "model", None)
+            kw = extract_keywords(reps, model_name=keyword_model)
+
+            semantic_clause_embs = None
+            if facets_obj is not None and semantic_helper_model is not None:
+                try:
+                    semantic_clause_embs = semantic_helper_model.encode(
+                        texts,
+                        batch_size=getattr(config, "BATCH_SIZE", 64),
+                        convert_to_numpy=True,
+                        normalize_embeddings=True,
+                        show_progress_bar=False,
+                    )
+                except Exception:
+                    logging.exception("   [FACETS] clause semantic embedding failed; falling back to main embeddings")
+                    semantic_clause_embs = None
 
             # 10) Refinement
             refined_df = None
@@ -551,7 +543,8 @@ def run_full_pipeline(
                     work_df["cluster_label"] = labels_int
 
                     # normalize embeddings (cosine)
-                    clause_embs = _normalize_rows(embeddings.astype(np.float32))
+                    clause_emb_source = semantic_clause_embs if semantic_clause_embs is not None else embeddings
+                    clause_embs = _normalize_rows(np.asarray(clause_emb_source, dtype=np.float32))
 
                     # run refinement (NOTE: other_label_value MUST be int -1)
                     logging.info("   [REFINE] start pol=%s | facets=%d | th(facet)=%.2f",
@@ -613,7 +606,7 @@ def run_full_pipeline(
 
             clause_frame = apply_facet_routing(
                 clause_frame,
-                clause_embs=embeddings,
+                clause_embs=semantic_clause_embs if semantic_clause_embs is not None else embeddings,
                 facets=facets_obj,
                 top_k=int(refine_th.get("top_k_facets", 2)),
                 threshold=float(refine_th.get("facet_threshold", 0.32)),
