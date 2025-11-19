@@ -63,8 +63,17 @@ merge = {
 
 # 편의를 위해 dict를 object처럼 접근할 수 있도록 임시 클래스 정의
 class ConfigObject:
-    def __init__(self, dictionary):
-        for key, value in dictionary.items():
+    def __init__(self, source):
+        """Lightweight dot-access wrapper that tolerates repeated wrapping."""
+
+        if isinstance(source, ConfigObject):
+            data = vars(source)
+        elif hasattr(source, "items"):
+            data = source
+        else:
+            raise TypeError("ConfigObject expects a mapping or ConfigObject instance")
+
+        for key, value in data.items():
             setattr(self, key, value)
 
 semantic = ConfigObject(semantic)
