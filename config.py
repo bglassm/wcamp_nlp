@@ -1,4 +1,5 @@
 from pathlib import Path
+import logging
 import os as _os
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -8,6 +9,8 @@ BASE_DIR   = Path(__file__).resolve().parent
 DATA_DIR   = BASE_DIR / "data"
 OUTPUT_DIR = BASE_DIR / "output"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+logger = logging.getLogger(__name__)
 
 REVIEW_DATA_DIR     = DATA_DIR / "review"
 COMMUNITY_DATA_DIR  = DATA_DIR / "community"
@@ -167,20 +170,64 @@ CLUSTER_NAME_TOPK = 3              # 클러스터 이름용 키워드 개수
 KEYWORD_MAX_SENT  = 50             # 키워드 추출시 샘플 문장 수
 KEYWORD_NGRAM_RANGE = (1, 1)
 TOKEN_PATTERN = r"(?u)\b[가-힣]{2,}\b"
-KOREAN_STOPWORDS = [
+KOREAN_STOPWORDS_PATH = "data/stopwords_ko.txt"
+KOREAN_STOPWORDS_CORE = [
     "은", "는", "이", "가", "을", "를", "에", "도",
     "너무", "정말", "그냥",
 ]
+ALLOWED_POS_TAGS_KO = {"NNG", "NNP", "NNB", "VA", "VV", "SL"}
 JOSA_EOMI_TAGS = {"JKS", "JKB", "JKC", "JKG", "JKV", "JKQ", "JKO", "JX", "JC", "EP", "EF", "EC"}
 VALID_KEYWORD_RE = r"^[가-힣A-Za-z]{1,10}$"
 MAX_KEYWORD_DOCS = 50               # 샘플링 문장 수 제한
 KEYWORD_CANDIDATE_MULTIPLIER = 2    # KeyBERT 후보 배수
+KEYWORD_MMR_DIVERSITY = 0.5         # KeyBERT MMR diversity 기본값
+KEYWORD_MAX_PER_CLUSTER = 10        # 각 클러스터에서 최종 키워드 수 기본값
 USE_KEYBERT = False                 # True: KeyBERT, False: c-TF-IDF
+GLOBAL_COMMON_TERMS_MAX_CLUSTER_RATIO = 0.4
+
+
+def _load_external_stopwords(stopword_path: str) -> set:
+    """Load additional Korean stopwords from the given relative path.
+
+    Falls back to an empty set if the file does not exist or cannot be read.
+    """
+
+    resolved = Path(stopword_path)
+    if not resolved.is_absolute():
+        resolved = BASE_DIR / resolved
+
+    if not resolved.exists():
+        logger.warning("Stopword file not found: %s — using core list only", resolved)
+        return set()
+
+    try:
+        lines = resolved.read_text(encoding="utf-8").splitlines()
+        words = {ln.strip() for ln in lines if ln.strip()}
+        logger.info("Loaded %d external Korean stopwords from %s", len(words), resolved)
+        return words
+    except Exception as exc:  # pragma: no cover - defensive I/O guard
+        logger.warning("Failed to load external stopwords from %s (%s)", resolved, exc)
+        return set()
+
+
+def _initialize_korean_stopwords() -> list:
+    """Return the union of the core stopword list and any external entries."""
+
+    stopwords = set(KOREAN_STOPWORDS_CORE)
+    stopwords.update(_load_external_stopwords(KOREAN_STOPWORDS_PATH))
+    return sorted(stopwords)
+
+
+KOREAN_STOPWORDS = _initialize_korean_stopwords()
 
 # ───────────────────────────────────────────────────────────────────────────
 # 10. Summarizer
 # ───────────────────────────────────────────────────────────────────────────
-TOP_K_REPRESENTATIVES = 3           # 대표 문장 개수
+MAX_REPRESENTATIVE_SENTENCES = 3           # 각 클러스터당 최종 대표 문장 수
+TOP_K_REPRESENTATIVES = MAX_REPRESENTATIVE_SENTENCES  # backward compatibility
+REPRESENTATIVE_CANDIDATE_MULTIPLIER = 10   # 후보 문장 수 multiplier
+REPRESENTATIVE_MMR_LAMBDA = 0.7            # 중요도 vs 다양성 가중치 (0.7 = 중요도 70%)
+REPRESENTATIVE_DUPLICATE_SIM_THRESHOLD = 0.95  # 이 이상 유사하면 중복으로 간주
 
 # ───────────────────────────────────────────────────────────────────────────
 # 11. Outlier & ABSA confidence handling
