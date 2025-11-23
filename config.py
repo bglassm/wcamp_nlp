@@ -54,10 +54,28 @@ COMMUNITY_DATA_DIR  = DATA_DIR / "community"
 REVIEW_DATA_DIR.mkdir(parents=True, exist_ok=True)
 COMMUNITY_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-INPUT_FILES = sorted(
-   p for p in REVIEW_DATA_DIR.glob("*.xlsx")
-   if not p.name.startswith("~$")
-)
+FRUIT_DATA_DIR   = DATA_DIR / "fruit"
+SEAFOOD_DATA_DIR = DATA_DIR / "seafood"
+VEGGIE_DATA_DIR  = DATA_DIR / "veggie"
+MEAT_DATA_DIR    = DATA_DIR / "meat"
+
+SEARCH_ROOTS = [
+    REVIEW_DATA_DIR,
+    FRUIT_DATA_DIR,
+    SEAFOOD_DATA_DIR,
+    VEGGIE_DATA_DIR,
+    MEAT_DATA_DIR,
+]
+
+candidates = []
+for root in SEARCH_ROOTS:
+    if root.exists():
+        candidates.extend(
+            p for p in root.glob("*.xlsx")
+            if p.is_file() and not p.name.startswith("~$")
+        )
+
+INPUT_FILES = sorted(candidates)
 
 # 1. Loader / Preprocess
 REQUIRED_COLUMNS = ["review"]
@@ -130,9 +148,7 @@ clause_split = ConfigObject(clause_split)
 # ---------------------------------------------------------------------------
 # Backward-compatibility aliases
 # ---------------------------------------------------------------------------
-# Several legacy modules expect these module-level attributes. Mirror the
-# values from the new ``embed`` namespace so existing imports continue to
-# work regardless of the backend (local SBERT vs. OpenAI).
+
 MODEL_NAME = embed.model
 DEVICE = embed.device
 BATCH_SIZE = embed.batch_size
