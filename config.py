@@ -3,9 +3,7 @@ import logging
 import os as _os
 from typing import Dict, Optional, Union
 
-# ───────────────────────────────────────────────────────────────────────────
 # 0. Base paths
-# ───────────────────────────────────────────────────────────────────────────
 BASE_DIR   = Path(__file__).resolve().parent
 DATA_DIR   = BASE_DIR / "data"
 OUTPUT_DIR = BASE_DIR / "output"
@@ -13,9 +11,7 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 logger = logging.getLogger(__name__)
 
-# ───────────────────────────────────────────────────────────────────────────
 # Category helpers
-# ───────────────────────────────────────────────────────────────────────────
 
 CATEGORIES = ["fruit", "seafood", "veggie", "meat", "generic"]
 
@@ -59,22 +55,18 @@ REVIEW_DATA_DIR.mkdir(parents=True, exist_ok=True)
 COMMUNITY_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 INPUT_FILES = sorted(
-    p for p in REVIEW_DATA_DIR.glob("*.xlsx")
-    if not p.name.startswith("~$")
+   p for p in REVIEW_DATA_DIR.glob("*.xlsx")
+   if not p.name.startswith("~$")
 )
 
-# ───────────────────────────────────────────────────────────────────────────
 # 1. Loader / Preprocess
-# ───────────────────────────────────────────────────────────────────────────
 REQUIRED_COLUMNS = ["review"]
 KEEP_META        = True
 
 # 리뷰 고유 ID 컬럼 (reset_index() 통해 부여)
 REVIEW_ID_COL    = "review_id"
 
-# ───────────────────────────────────────────────────────────────────────────
 # 2. Embedding
-# ───────────────────────────────────────────────────────────────────────────
 # 임베딩 설정 (backend: local | openai)
 embed = {
     "backend": "openai",                 # "local" | "openai"
@@ -145,9 +137,7 @@ MODEL_NAME = embed.model
 DEVICE = embed.device
 BATCH_SIZE = embed.batch_size
 
-# ───────────────────────────────────────────────────────────────────────────
 # 3. Clause splitting (절 분할)
-# ───────────────────────────────────────────────────────────────────────────
 CLAUSE_CONNECTIVES = [
     "그럼에도 불구하고", "에도 불구하고", "인데도 불구하고",
     "그렇긴 하지만", "그렇긴 한데", "기는 하지만", "긴 하지만", "긴 한데",
@@ -165,17 +155,13 @@ CLAUSE_CONNECTIVES = [
 
     "왜냐하면", "위해서", "위하여", "하려고",
 ]
-# ───────────────────────────────────────────────────────────────────────────
 # 4. ABSA 설정
-# ───────────────────────────────────────────────────────────────────────────
 # PyABSA BERT-SPC 멀티링궐 모델 (긍정/중립/부정)
 ABSA_MODEL_NAME = "multilingual"
 ABSA_BATCH_SIZE = 32
 # device: 기존 config.embed.device 사용
 
-# ───────────────────────────────────────────────────────────────────────────
 # 5. UMAP  (note: 실제 실행은 tuner.get_cluster_params() 결과를 우선 사용)
-# ───────────────────────────────────────────────────────────────────────────
 # 기존 25→15로 소폭 하향하여 지역 구조를 조금 더 드러내되, 과분할은 방지
 UMAP_N_NEIGHBORS   = 15
 UMAP_MIN_DIST      = 0.05
@@ -183,30 +169,22 @@ UMAP_METRIC        = "cosine"
 UMAP_RANDOM_STATE  = 42
 UMAP_DIMS_CLUSTER  = 10
 
-# ───────────────────────────────────────────────────────────────────────────
 # 6. HDBSCAN (fallback defaults; 보통은 tuner 결과 사용)
-# ───────────────────────────────────────────────────────────────────────────
 HDBSCAN_MIN_CLUSTER_SIZE = 240
 HDBSCAN_MIN_SAMPLES      = 55
 HDBSCAN_SELECTION_EPS    = 0.05
 # UMAP 좌표(저차원) 기준으로는 보통 euclidean이 안정적
 HDBSCAN_METRIC           = "euclidean"
 
-# ───────────────────────────────────────────────────────────────────────────
 # 7. Cluster merge
-# ───────────────────────────────────────────────────────────────────────────
 ENABLE_CLUSTER_MERGE     = True
 CLUSTER_MERGE_THRESHOLD  = 0.93
 MERGE_BATCH_SIZE         = 64
 
-# ───────────────────────────────────────────────────────────────────────────
 # 8. Sentiment analysis (절 필터링용 ABSA)
-# ───────────────────────────────────────────────────────────────────────────
 ENABLE_SENTIMENT_ANALYSIS = False  # 절 분할 후 ABSA 강제 적용 시 True로 변경
 
-# ───────────────────────────────────────────────────────────────────────────
 # 9. Keyword / naming
-# ───────────────────────────────────────────────────────────────────────────
 CLUSTER_NAME_TOPK = 3              # 클러스터 이름용 키워드 개수
 KEYWORD_MAX_SENT  = 50             # 키워드 추출시 샘플 문장 수
 KEYWORD_NGRAM_RANGE = (1, 1)
@@ -261,25 +239,19 @@ def _initialize_korean_stopwords() -> list:
 
 KOREAN_STOPWORDS = _initialize_korean_stopwords()
 
-# ───────────────────────────────────────────────────────────────────────────
 # 10. Summarizer
-# ───────────────────────────────────────────────────────────────────────────
 MAX_REPRESENTATIVE_SENTENCES = 3           # 각 클러스터당 최종 대표 문장 수
 TOP_K_REPRESENTATIVES = MAX_REPRESENTATIVE_SENTENCES  # backward compatibility
 REPRESENTATIVE_CANDIDATE_MULTIPLIER = 10   # 후보 문장 수 multiplier
 REPRESENTATIVE_MMR_LAMBDA = 0.7            # 중요도 vs 다양성 가중치 (0.7 = 중요도 70%)
 REPRESENTATIVE_DUPLICATE_SIM_THRESHOLD = 0.95  # 이 이상 유사하면 중복으로 간주
 
-# ───────────────────────────────────────────────────────────────────────────
 # 11. Outlier & ABSA confidence handling
-# ───────────────────────────────────────────────────────────────────────────
 HANDLE_OUTLIERS           = True
 OUTLIER_LABEL             = "other"
 ABSA_CONFIDENCE_THRESHOLD = 0.6
 
-# ───────────────────────────────────────────────────────────────────────────
 # 12. Refinement layer (domain-agnostic)
-# ───────────────────────────────────────────────────────────────────────────
 # rules/facets.yml, rules/thresholds.yml 사용. main.py에서 getattr로 안전 로드.
 REFINEMENT_ENABLED            = True
 REFINEMENT_FACETS_PATH        = "rules/facets.yml"
@@ -300,7 +272,6 @@ SMART_SPLIT_MAX_SPLITS_PER_SENT = 3        # 문장당 최대 분할 수
 # Stable IDs / resume cache
 ENABLE_STABLE_IDS = True
 
-# ───────────────────────────────────────────────────────────────────────────
 # Tuner(자동 파라미터) 기본 비율
 # 작을수록 더 세분화(=클러스터 수 ↑), 클수록 더 합침(=클러스터 수 ↓)
 TUNER_BASE_PCT_LARGE = 0.005   # N이 큰 셋 (대략 6천 이상)
@@ -311,7 +282,6 @@ TUNER_UMAP_MIN_DIMS = 8
 TUNER_UMAP_MAX_DIMS = 14
 TUNER_UMAP_MAX_NEIGHBORS = 100
 
-# ───────────────────────────────────────────────────────────────────────────
 # 파셋 버킷(예: 당도/식감/외관…) 전용 코스닝(coarsening) 노브
 #   → 버킷 내부에서 너무 잘게 쪼개지는 것을 방지하기 위한 완만한 합침 세팅
 BUCKET_MIN_CLUSTER_SIZE_MULT = 1.35   # 기본 min_cluster_size에 곱해 키움
