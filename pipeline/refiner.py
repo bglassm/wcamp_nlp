@@ -31,6 +31,9 @@ __all__ = [
     "Facet",
     "load_facets_yml",
     "load_facets_for_category",
+    "normalize_category_facet_config",
+    "assign_category_facets_keyword",
+    "compute_facet_buckets",
     "apply_facet_routing",
     "refine_clusters",
 ]
@@ -267,6 +270,151 @@ def load_facets_for_category(
     return selected
 
 
+def normalize_category_facet_config(facet_config: Any) -> Dict[str, Dict[str, Any]]:
+    """Normalize a category facet config node into ``facet_id -> metadata`` mapping.
+
+    Each value contains ``label_ko`` and keyword lists for positive/negative cues.
+    Missing fields are filled with safe defaults so callers can assume presence.
+    """
+
+    if not isinstance(facet_config, dict):
+        return {}
+
+    # The expected shape is {"facets": {facet_id: {label_ko, positive_keywords, negative_keywords}}}
+    facets_node = facet_config.get("facets") if isinstance(facet_config, dict) else None
+    if not isinstance(facets_node, dict):
+        return {}
+
+    normalized: Dict[str, Dict[str, Any]] = {}
+    for facet_id, node in facets_node.items():
+        if node is None:
+            node = {}
+        if not isinstance(node, dict):
+            continue
+
+        pos_kws_raw = node.get("positive_keywords") or []
+        neg_kws_raw = node.get("negative_keywords") or []
+
+        def _normalize_keywords(seq: Any) -> List[str]:
+            if not isinstance(seq, (list, tuple)):
+                return []
+            out: List[str] = []
+            for kw in seq:
+                try:
+                    s = str(kw).strip()
+                except Exception:
+                    continue
+                if not s:
+                    continue
+                out.append(s.lower())
+            return out
+
+        normalized[facet_id] = {
+            "label_ko": str(node.get("label_ko") or ""),
+            "positive_keywords": _normalize_keywords(pos_kws_raw),
+            "negative_keywords": _normalize_keywords(neg_kws_raw),
+        }
+
+    return normalized
+
+
+def assign_category_facets_keyword(
+    df: pd.DataFrame,
+    facet_config: Any,
+    *,
+    text_column: str = "clause",
+    polarity_column: str = "polarity",
+    output_column: str = "facet_ids",
+) -> pd.DataFrame:
+    """
+    Assign category-specific facet ids to each row using simple keyword matching.
+
+    Returns a DataFrame with ``output_column`` populated as a list of facet ids
+    (or empty list) based on polarity-aware keyword cues.
+    """
+
+    if df is None or df.empty:
+        return df
+
+    if text_column not in df.columns or polarity_column not in df.columns:
+        return df
+
+    normalized = normalize_category_facet_config(facet_config)
+    if not normalized:
+        return df
+
+    out = df.copy()
+
+    def _match_row(text: str, polarity: str) -> List[str]:
+        txt = str(text).lower()
+        pol = str(polarity).strip().lower()
+        matched: List[str] = []
+
+        for facet_id, meta in normalized.items():
+            pos_kws = meta.get("positive_keywords") or []
+            neg_kws = meta.get("negative_keywords") or []
+
+            if pol == "neg":
+                candidates = neg_kws
+            elif pol == "pos":
+                candidates = pos_kws
+            else:
+                # For neutral, allow either set to surface facet cues.
+                candidates = (pos_kws or []) + (neg_kws or [])
+
+            if any(kw in txt for kw in candidates):
+                matched.append(facet_id)
+
+        # Deterministic order
+        return sorted(set(matched))
+
+    out[output_column] = [
+        _match_row(text, pol)
+        for text, pol in zip(out[text_column].astype(str), out[polarity_column])
+    ]
+
+    return out
+
+
+def compute_facet_buckets(
+    df: pd.DataFrame,
+    *,
+    facet_ids_column: str = "facet_ids",
+    polarity_column: str = "polarity",
+    bucket_column: str = "facet_bucket",
+    unmatched_facet_name: str = "unmatched",
+) -> pd.DataFrame:
+    """Compute a primary facet bucket label per row based on facet ids and polarity."""
+
+    if df is None or df.empty or facet_ids_column not in df.columns:
+        return df
+
+    out = df.copy()
+
+    def _coerce_list(v: Any) -> List[str]:
+        if isinstance(v, list):
+            return [str(x).strip() for x in v if str(x).strip()]
+        if isinstance(v, tuple):
+            return [str(x).strip() for x in v if str(x).strip()]
+        if isinstance(v, str):
+            cleaned = v.strip().strip("[]")
+            parts = [p.strip(" ' \"") for p in cleaned.split(",") if p.strip(" ' \"")]
+            return [p for p in parts if p]
+        return []
+
+    def _pick_bucket(ids: List[str], pol: str) -> str:
+        facet = sorted(ids)[0] if ids else unmatched_facet_name
+        polarity = str(pol).strip().lower() or "neu"
+        return f"{facet}_{polarity}"
+
+    out[bucket_column] = [
+        _pick_bucket(_coerce_list(ids), pol)
+        for ids, pol in zip(out[facet_ids_column], out[polarity_column])
+    ]
+
+    return out
+
+
 # ---------------------------------------------------------------------
 # Facet routing
 # ---------------------------------------------------------------------
@@ -391,6 +539,60 @@ def apply_facet_routing(
     if "facet_topk" in out.columns:
         mask_blankk = out["facet_topk"].astype(str).str.strip().isin(["", "nan", "none", "None"])
         out.loc[mask_blankk, "facet_topk"] = None
+
+    # ---------------------------------------------------------------
+    # Category-aware keyword facet assignment (non-destructive)
+    # ---------------------------------------------------------------
+    normalized_cfg = normalize_category_facet_config(facet_config)
+    if normalized_cfg:
+        try:
+            out = assign_category_facets_keyword(
+                out,
+                {"facets": normalized_cfg},
+                text_column=text_column,
+                polarity_column="polarity",
+                output_column="facet_ids",
+            )
+            out = compute_facet_buckets(
+                out,
+                facet_ids_column="facet_ids",
+                polarity_column="polarity",
+                bucket_column="facet_bucket",
+                unmatched_facet_name="unmatched",
+            )
+
+            def _has_facets(v: Any) -> bool:
+                if isinstance(v, (list, tuple, set)):
+                    return len(v) > 0
+                if isinstance(v, str):
+                    cleaned = v.strip().strip("[]")
+                    return bool(cleaned)
+                return False
+
+            non_empty = out["facet_ids"].apply(_has_facets).sum()
+            bucket_counts = (
+                out.get("facet_bucket")
+                .value_counts(dropna=True)
+                .head(5)
+                .to_dict()
+                if "facet_bucket" in out.columns
+                else {}
+            )
+            logger.info(
+                "[FACETS] keyword assignment done | sku=%s cat=%s | matched_rows=%d/%d | top_buckets=%s",
+                sku or "-",
+                category or "-",
+                int(non_empty),
+                len(out),
+                bucket_counts,
+            )
+        except Exception:
+            logger.warning(
+                "[FACETS] keyword-based facet assignment skipped due to error; sku=%s cat=%s",
+                sku or "-",
+                category or "-",
+                exc_info=True,
+            )
 
     return out
 
