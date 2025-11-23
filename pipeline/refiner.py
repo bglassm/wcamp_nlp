@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "Facet",
     "load_facets_yml",
+    "load_facets_for_category",
     "apply_facet_routing",
     "refine_clusters",
 ]
@@ -200,6 +201,72 @@ def load_facets_yml(path: str | Path, facet_embedder, *args, **kwargs) -> List[F
     return facets
 
 
+def load_facets_for_category(
+    category: str,
+    sku: Optional[str] = None,
+    *,
+    path: str | Path = Path("rules/facets_by_category.yml"),
+    fallback: Any = None,
+) -> Any:
+    """Load category-specific facet config from ``rules/facets_by_category.yml``.
+
+    Returns the category node when present, otherwise falls back to ``fallback``
+    (typically the global facet config). Missing/parse errors are logged but do
+    not raise so downstream routing can continue unchanged.
+    """
+
+    normalized_category = (category or "").strip().lower() or "generic"
+    cfg_path = Path(path)
+
+    if yaml is None:  # pragma: no cover - defensive
+        logger.warning(
+            "[FACETS] PyYAML unavailable; skipping category facets and using fallback"
+        )
+        return fallback
+
+    if not cfg_path.exists():
+        logger.warning(
+            "[FACETS] category facets file missing at %s; using fallback facets", cfg_path
+        )
+        return fallback
+
+    try:
+        payload = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        logger.warning(
+            "[FACETS] failed to parse %s; using fallback facets", cfg_path, exc_info=True
+        )
+        return fallback
+
+    categories = payload.get("categories") if isinstance(payload, dict) else {}
+    selected = None
+    if isinstance(categories, dict):
+        selected = categories.get(normalized_category)
+        used_category = normalized_category
+        if selected is None and "generic" in categories:
+            selected = categories.get("generic")
+            used_category = "generic"
+    else:
+        used_category = normalized_category
+
+    if selected is None:
+        logger.info(
+            "[FACETS] category '%s' not found in %s; using fallback facets (sku=%s)",
+            normalized_category,
+            cfg_path,
+            sku or "-",
+        )
+        return fallback
+
+    logger.info(
+        "[FACETS] category facets selected: cat=%s sku=%s source=%s",
+        used_category,
+        sku or "-",
+        cfg_path,
+    )
+    return selected
+
+
 # ---------------------------------------------------------------------
 # Facet routing
 # ---------------------------------------------------------------------
@@ -254,6 +321,9 @@ def apply_facet_routing(
     text_column: str = "clause",
     top_k: int = 2,
     threshold: float = 0.32,
+    category: Optional[str] = None,
+    facet_config: Any = None,
+    sku: Optional[str] = None,
 ) -> pd.DataFrame:
     """
     Fill facet_top1 / facet_topk using cosine similarity to facets.

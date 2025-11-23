@@ -49,7 +49,13 @@ from pipeline.exporter import (
 )
 from pipeline.idmap import assign_stable_ids
 from pipeline.report import save_client_report
-from pipeline.refiner import load_facets_yml, refine_clusters, _normalize_rows, apply_facet_routing
+from pipeline.refiner import (
+    load_facets_for_category,
+    load_facets_yml,
+    refine_clusters,
+    _normalize_rows,
+    apply_facet_routing,
+)
 from utils.runmeta import write_run_manifest, write_meta_json
 
 # from sentence_transformers import SentenceTransformer # Not needed here anymore, moved to embedder.py
@@ -347,6 +353,12 @@ def run_full_pipeline(
         out_dir = output_dir / stem_effective
         out_dir.mkdir(parents=True, exist_ok=True)
 
+        category = config.infer_category(file_path, stem_effective)
+        logging.info("   Category inferred for %s: %s", stem_effective, category)
+        facet_config = load_facets_for_category(
+            category, sku=stem_effective, fallback=facets_obj
+        )
+
         # 1) Load + preprocess
         t0 = time.time()
         logging.info("   1) Loading & preprocessing reviews…")
@@ -610,6 +622,9 @@ def run_full_pipeline(
                 facets=facets_obj,
                 top_k=int(refine_th.get("top_k_facets", 2)),
                 threshold=float(refine_th.get("facet_threshold", 0.32)),
+                category=category,
+                facet_config=facet_config,
+                sku=stem_effective,
             )
 
             combined_clause_df_list.append(clause_frame)

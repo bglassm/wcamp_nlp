@@ -1,6 +1,7 @@
 from pathlib import Path
 import logging
 import os as _os
+from typing import Dict, Optional, Union
 
 # ───────────────────────────────────────────────────────────────────────────
 # 0. Base paths
@@ -11,6 +12,46 @@ OUTPUT_DIR = BASE_DIR / "output"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 logger = logging.getLogger(__name__)
+
+# ───────────────────────────────────────────────────────────────────────────
+# Category helpers
+# ───────────────────────────────────────────────────────────────────────────
+
+CATEGORIES = ["fruit", "seafood", "veggie", "meat", "generic"]
+
+CATEGORY_DIR_MAP = {
+    "fruit":   ["fruit", "fruits"],
+    "seafood": ["seafood", "fish"],
+    "veggie":  ["veggie", "vegetable"],
+    "meat":    ["meat", "livestock"],
+}
+
+CATEGORY_OVERRIDES: Dict[str, str] = {}
+
+DEFAULT_CATEGORY = "generic"
+
+
+def infer_category(dataset_path: Union[str, Path], sku: Optional[str] = None) -> str:
+    """Infer category from dataset path or explicit overrides.
+
+    - Honors ``CATEGORY_OVERRIDES`` first when ``sku`` is provided.
+    - Matches directory tokens defined in ``CATEGORY_DIR_MAP`` against the
+      normalized dataset path.
+    - Falls back to ``DEFAULT_CATEGORY`` when no match is found.
+    """
+
+    if sku and sku in CATEGORY_OVERRIDES:
+        return CATEGORY_OVERRIDES[sku]
+
+    normalized_path = Path(dataset_path).as_posix().lower()
+    parts = {p.lower() for p in Path(normalized_path).parts}
+
+    for category, dir_names in CATEGORY_DIR_MAP.items():
+        for token in dir_names:
+            if token.lower() in parts:
+                return category
+
+    return DEFAULT_CATEGORY
 
 REVIEW_DATA_DIR     = DATA_DIR / "review"
 COMMUNITY_DATA_DIR  = DATA_DIR / "community"

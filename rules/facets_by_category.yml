@@ -1,0 +1,11 @@
+categories:
+  fruit:
+    facets: {}
+  seafood:
+    facets: {}
+  veggie:
+    facets: {}
+  meat:
+    facets: {}
+  generic:
+    facets: {}
