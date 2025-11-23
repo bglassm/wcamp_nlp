@@ -1,14 +1,5 @@
 categories:
   fruit:
-<<<<<<< ours
-    facets: {}
-  seafood:
-    facets: {}
-  veggie:
-    facets: {}
-  meat:
-    facets: {}
-=======
     facets:
       sweetness:
         label_ko: "당도"
@@ -413,6 +404,5 @@ categories:
           - "아이스팩이 녹았다"
           - "상온 배송"
           - "포장이 터졌다"
->>>>>>> theirs
   generic:
     facets: {}
