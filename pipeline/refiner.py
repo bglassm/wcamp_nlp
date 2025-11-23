@@ -472,7 +472,7 @@ def apply_facet_routing(
     category: Optional[str] = None,
     facet_config: Any = None,
     sku: Optional[str] = None,
-) -> pd.DataFrame:
+    ) -> pd.DataFrame:
     """
     Fill facet_top1 / facet_topk using cosine similarity to facets.
 
@@ -516,6 +516,26 @@ def apply_facet_routing(
     )
 
     out = df.copy()
+
+    def _extract_allowed_facet_ids(cfg: Any) -> Optional[set]:
+        if not isinstance(cfg, dict):
+            return None
+        facets_node = cfg.get("facets") if isinstance(cfg, dict) else None
+        if isinstance(facets_node, dict):
+            return set(facets_node.keys())
+        try:
+            if all(isinstance(v, (dict, type(None))) for v in cfg.values()):
+                return set(cfg.keys())
+        except Exception:
+            return None
+        return None
+
+    allowed_facet_ids = _extract_allowed_facet_ids(facet_config)
+    logger.info(
+        "[FACETS] category fallback facets for sku=%s: %s",
+        sku or "-",
+        sorted(list(allowed_facet_ids)) if allowed_facet_ids else "none",
+    )
 
     # facet_top1
     if "facet_top1" in out.columns:
@@ -593,6 +613,71 @@ def apply_facet_routing(
                 category or "-",
                 exc_info=True,
             )
+
+    # ---------------------------------------------------------------
+    # Semantic fallback via facet_top1 when keyword matching failed
+    # ---------------------------------------------------------------
+    if "facet_ids" not in out.columns:
+        out["facet_ids"] = [[] for _ in range(len(out))]
+
+    def _ensure_list(v: Any) -> List[str]:
+        if isinstance(v, list):
+            return [str(x).strip() for x in v if str(x).strip()]
+        if isinstance(v, tuple):
+            return [str(x).strip() for x in v if str(x).strip()]
+        if isinstance(v, str):
+            cleaned = v.strip().strip("[]")
+            parts = [p.strip(" ' \"") for p in cleaned.split(",") if p.strip(" ' \"")]
+            return [p for p in parts if p]
+        return []
+
+    out["facet_ids"] = out["facet_ids"].apply(_ensure_list)
+
+    if allowed_facet_ids:
+        for idx, facet_list, top1 in zip(
+            out.index, out["facet_ids"], out.get("facet_top1", [None] * len(out))
+        ):
+            if facet_list:
+                continue
+            candidate = "" if pd.isna(top1) else str(top1).strip()
+            if candidate and candidate in allowed_facet_ids:
+                out.at[idx, "facet_ids"] = [candidate]
+
+    # ---------------------------------------------------------------
+    # Recompute facet_bucket based on final facet_ids + polarity
+    # ---------------------------------------------------------------
+    pol_map = {
+        "neg": "negative",
+        "negative": "negative",
+        "pos": "positive",
+        "positive": "positive",
+        "neu": "neutral",
+        "neutral": "neutral",
+    }
+
+    def _normalize_polarity(v: Any) -> str:
+        pol = str(v).strip().lower()
+        return pol_map.get(pol, pol or "unknown")
+
+    buckets: List[str] = []
+    for ids, pol in zip(out["facet_ids"], out.get("polarity", ["unknown"] * len(out))):
+        pol_suffix = _normalize_polarity(pol)
+        if ids:
+            bucket = f"{ids[0]}_{pol_suffix}"
+        else:
+            bucket = f"unmatched_{pol_suffix}"
+        buckets.append(bucket)
+    out["facet_bucket"] = buckets
+
+    non_empty_final = out["facet_ids"].apply(lambda v: bool(v)).sum()
+    unmatched_final = out["facet_bucket"].astype(str).str.startswith("unmatched_").sum()
+    logger.info(
+        "[FACETS] facet_ids coverage after fallback: %d/%d (%.1f%%) | unmatched=%d",
+        int(non_empty_final),
+        len(out),
+        (non_empty_final / len(out) * 100) if len(out) else 0.0,
+        int(unmatched_final),
+    )
 
     return out
 
