@@ -1,5 +1,6 @@
 categories:
   fruit:
+<<<<<<< ours
     facets: {}
   seafood:
     facets: {}
@@ -7,5 +8,411 @@ categories:
     facets: {}
   meat:
     facets: {}
+=======
+    facets:
+      sweetness:
+        label_ko: "당도"
+        description_ko: "단맛, 달콤함, 고당도 등"
+        positive_keywords:
+          - "단맛"
+          - "달콤하다"
+          - "달콤함"
+          - "고당도"
+          - "달달하다"
+          - "당도가 높다"
+          - "당도가 좋다"
+          - "꿀맛"
+        negative_keywords:
+          - "싱겁다"
+          - "밍밍하다"
+          - "무맛"
+          - "당도가 낮다"
+          - "달지 않다"
+          - "맛이 없다"
+          - "밍밍한 맛"
+          - "싱거운 맛"
+      aroma:
+        label_ko: "향"
+        description_ko: "향긋함, 과일향, 냄새 관련 피드백"
+        positive_keywords:
+          - "향긋하다"
+          - "향이 좋다"
+          - "달달한 향"
+          - "과일향"
+          - "향기롭다"
+        negative_keywords:
+          - "향이 없다"
+          - "향이 안 난다"
+          - "냄새가 이상하다"
+          - "냄새가 난다"
+          - "퀴퀴하다"
+      texture:
+        label_ko: "식감"
+        description_ko: "아삭함, 탱글함, 물렁함 등"
+        positive_keywords:
+          - "아삭아삭하다"
+          - "부드럽다"
+          - "탱글하다"
+          - "쫄깃하다"
+          - "촉촉하다"
+        negative_keywords:
+          - "물컹하다"
+          - "푸석푸석하다"
+          - "질기다"
+          - "딱딱하다"
+          - "흐물거리다"
+      ripeness:
+        label_ko: "과숙 정도"
+        description_ko: "덜 익음, 과숙, 적정 숙성 여부"
+        positive_keywords:
+          - "잘 익다"
+          - "적당히 익다"
+          - "익음"
+          - "숙성 잘됨"
+        negative_keywords:
+          - "덜 익다"
+          - "미숙"
+          - "시다"
+          - "과숙"
+          - "너무 익다"
+          - "물러지다"
+      appearance:
+        label_ko: "외관"
+        description_ko: "색감, 흠집, 멍, 변색 등"
+        positive_keywords:
+          - "색이 예쁘다"
+          - "선명한 색"
+          - "윤기나다"
+          - "모양이 좋다"
+          - "흠집이 없다"
+        negative_keywords:
+          - "멍들다"
+          - "상처"
+          - "곰팡이"
+          - "변색"
+          - "모양이 불량하다"
+          - "흑점"
+      freshness:
+        label_ko: "신선도"
+        description_ko: "싱싱함, 상태, 냄새 등"
+        positive_keywords:
+          - "신선하다"
+          - "싱싱하다"
+          - "상태가 좋다"
+          - "아삭하다"
+        negative_keywords:
+          - "신선하지 않다"
+          - "싱싱하지 않다"
+          - "시들다"
+          - "상하다"
+          - "오래되다"
+          - "냄새가 난다"
+      size_weight_diff:
+        label_ko: "크기/무게 차"
+        description_ko: "크기 편차, 중량 만족도"
+        positive_keywords:
+          - "크다"
+          - "알이 굵다"
+          - "큼직하다"
+          - "중량이 넉넉하다"
+        negative_keywords:
+          - "작다"
+          - "알이 작다"
+          - "크기 제각각"
+          - "중량 부족"
+          - "양이 적다"
+      price:
+        label_ko: "가격"
+        description_ko: "가격 대비 만족도"
+        positive_keywords:
+          - "가성비가 좋다"
+          - "저렴하다"
+          - "합리적인 가격"
+        negative_keywords:
+          - "비싸다"
+          - "가격이 높다"
+          - "값비싸다"
+          - "가성비가 나쁘다"
+          - "돈이 아깝다"
+      packaging_delivery:
+        label_ko: "패키지/배송"
+        description_ko: "포장 상태, 냉장/아이스팩, 배송 속도"
+        positive_keywords:
+          - "포장이 깔끔하다"
+          - "신선포장"
+          - "배송이 빠르다"
+          - "아이스팩이 충분하다"
+        negative_keywords:
+          - "포장이 불량하다"
+          - "포장이 터졌다"
+          - "배송이 늦다"
+          - "아이스팩이 녹았다"
+          - "상온 배송"
+          - "박스가 찌그러졌다"
+  seafood:
+    facets:
+      texture:
+        label_ko: "식감"
+        description_ko: "쫄깃함, 탱글함, 물컹함 등"
+        positive_keywords:
+          - "쫄깃하다"
+          - "탱글하다"
+          - "부드럽다"
+          - "탄력이 있다"
+        negative_keywords:
+          - "질기다"
+          - "물컹하다"
+          - "푸석하다"
+          - "흐물거리다"
+          - "딱딱하다"
+      size_weight:
+        label_ko: "크기/중량"
+        description_ko: "크기, 살점 양, 중량 만족도"
+        positive_keywords:
+          - "크다"
+          - "통통하다"
+          - "두툼하다"
+          - "중량이 넉넉하다"
+        negative_keywords:
+          - "작다"
+          - "살이 적다"
+          - "양이 적다"
+          - "사이즈가 작다"
+          - "빈약하다"
+      freshness:
+        label_ko: "신선도"
+        description_ko: "싱싱함, 비린내, 상함 등"
+        positive_keywords:
+          - "싱싱하다"
+          - "신선하다"
+          - "비리지 않다"
+          - "냄새가 없다"
+          - "살아있다"
+        negative_keywords:
+          - "비린내"
+          - "비리다"
+          - "상하다"
+          - "신선하지 않다"
+          - "갈변"
+          - "살아있지 않다"
+          - "죽어있다"
+          - "냄새가 심하다"
+      prep_state:
+        label_ko: "손질 상태"
+        description_ko: "손질 여부, 내장/이물 제거"
+        positive_keywords:
+          - "손질이 잘 되어 있다"
+          - "손질되어 있다"
+          - "손질이 깔끔하다"
+        negative_keywords:
+          - "손질이 안 되어 있다"
+          - "손질이 불량하다"
+          - "내장이 제거되지 않았다"
+          - "모래가 많다"
+          - "손질이 번거롭다"
+      price:
+        label_ko: "가격"
+        description_ko: "가격 대비 만족도"
+        positive_keywords:
+          - "가성비가 좋다"
+          - "저렴하다"
+          - "가격이 합리적이다"
+        negative_keywords:
+          - "비싸다"
+          - "가격이 높다"
+          - "값이 세다"
+          - "가성비가 나쁘다"
+      packaging_delivery:
+        label_ko: "패키지/배송"
+        description_ko: "포장 상태, 냉매, 배송 속도"
+        positive_keywords:
+          - "포장이 깔끔하다"
+          - "아이스팩이 충분하다"
+          - "배송이 빠르다"
+          - "신선하게 도착했다"
+        negative_keywords:
+          - "포장이 불량하다"
+          - "배송이 느리다"
+          - "아이스팩이 녹았다"
+          - "상온 배송"
+          - "포장이 터졌다"
+  veggie:
+    facets:
+      freshness:
+        label_ko: "신선도"
+        description_ko: "싱싱함, 시듦, 변색 등"
+        positive_keywords:
+          - "신선하다"
+          - "싱싱하다"
+          - "상태가 좋다"
+          - "아삭하다"
+        negative_keywords:
+          - "신선하지 않다"
+          - "시들다"
+          - "시든 상태"
+          - "상하다"
+          - "누렇다"
+      taste:
+        label_ko: "맛"
+        description_ko: "풍미, 쓴맛/떫은맛 여부"
+        positive_keywords:
+          - "맛있다"
+          - "달다"
+          - "달달하다"
+          - "담백하다"
+          - "고소하다"
+        negative_keywords:
+          - "맛이 없다"
+          - "쓰다"
+          - "밍밍하다"
+          - "떫다"
+      texture:
+        label_ko: "식감"
+        description_ko: "아삭함, 물컹함, 질김 등"
+        positive_keywords:
+          - "아삭아삭하다"
+          - "부드럽다"
+          - "촉촉하다"
+        negative_keywords:
+          - "질기다"
+          - "질척거리다"
+          - "물컹하다"
+          - "푸석푸석하다"
+      appearance:
+        label_ko: "외관"
+        description_ko: "색감, 흠집, 벌레 먹음 등"
+        positive_keywords:
+          - "색이 선명하다"
+          - "모양이 좋다"
+          - "흠집이 없다"
+          - "깨끗하다"
+        negative_keywords:
+          - "변색"
+          - "상처"
+          - "얼룩"
+          - "벌레 먹다"
+      size:
+        label_ko: "크기"
+        description_ko: "크기 만족도, 균일성"
+        positive_keywords:
+          - "크다"
+          - "알이 굵다"
+          - "두툼하다"
+          - "큼직하다"
+        negative_keywords:
+          - "작다"
+          - "크기 제각각"
+          - "양이 적다"
+          - "빈약하다"
+      price:
+        label_ko: "가격"
+        description_ko: "가격 대비 만족도"
+        positive_keywords:
+          - "가성비가 좋다"
+          - "저렴하다"
+          - "가격이 괜찮다"
+        negative_keywords:
+          - "비싸다"
+          - "가격이 높다"
+          - "값이 세다"
+          - "가성비가 나쁘다"
+      packaging_delivery:
+        label_ko: "패키지/배송"
+        description_ko: "포장 상태, 신선 포장, 배송 속도"
+        positive_keywords:
+          - "포장이 깔끔하다"
+          - "신선하게 배송된다"
+          - "배송이 빠르다"
+          - "아이스팩이 충분하다"
+        negative_keywords:
+          - "포장이 불량하다"
+          - "배송이 늦다"
+          - "아이스팩이 녹았다"
+          - "상온 배송"
+          - "포장이 터졌다"
+  meat:
+    facets:
+      freshness:
+        label_ko: "신선도/상태/냄새"
+        description_ko: "신선도, 냄새, 변색 여부"
+        positive_keywords:
+          - "신선하다"
+          - "상태가 좋다"
+          - "냄새가 없다"
+          - "육즙이 있다"
+        negative_keywords:
+          - "냄새가 난다"
+          - "잡내가 있다"
+          - "상하다"
+          - "신선하지 않다"
+          - "색이 변했다"
+      texture:
+        label_ko: "식감"
+        description_ko: "부드러움, 연함, 질김 등"
+        positive_keywords:
+          - "부드럽다"
+          - "연하다"
+          - "쫄깃하다"
+          - "육즙이 풍부하다"
+        negative_keywords:
+          - "질기다"
+          - "퍽퍽하다"
+          - "딱딱하다"
+          - "건조하다"
+      appearance:
+        label_ko: "외관"
+        description_ko: "마블링, 색, 핏물 등"
+        positive_keywords:
+          - "마블링이 좋다"
+          - "색이 선명하다"
+          - "윤기가 있다"
+          - "지방이 적당하다"
+        negative_keywords:
+          - "지방이 너무 많다"
+          - "색이 변했다"
+          - "핏물이 많다"
+          - "윤기가 없다"
+      thickness_size_weight:
+        label_ko: "두께/크기/중량"
+        description_ko: "두께, 크기, 양에 대한 만족도"
+        positive_keywords:
+          - "두툼하다"
+          - "두께가 적당하다"
+          - "크다"
+          - "양이 많다"
+          - "푸짐하다"
+        negative_keywords:
+          - "얇다"
+          - "양이 적다"
+          - "작다"
+          - "불균일하다"
+          - "생각보다 적다"
+      price:
+        label_ko: "가격"
+        description_ko: "가격 대비 만족도"
+        positive_keywords:
+          - "가성비가 좋다"
+          - "저렴하다"
+          - "가격이 합리적이다"
+        negative_keywords:
+          - "비싸다"
+          - "가격이 높다"
+          - "값이 세다"
+          - "가성비가 나쁘다"
+      packaging_delivery:
+        label_ko: "패키지/배송"
+        description_ko: "포장 상태, 냉매, 배송 속도"
+        positive_keywords:
+          - "포장이 깔끔하다"
+          - "아이스팩이 충분하다"
+          - "배송이 빠르다"
+          - "신선하게 도착했다"
+        negative_keywords:
+          - "포장이 불량하다"
+          - "배송이 느리다"
+          - "아이스팩이 녹았다"
+          - "상온 배송"
+          - "포장이 터졌다"
+>>>>>>> theirs
   generic:
     facets: {}

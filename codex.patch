@@ -1,0 +1,900 @@
+diff --git a/config.py b/config.py
+index 2186dbd1d89acc901b9a80e4fa777750fe00c579..72a399706516e3cdec40ff2ec5219a85045d327b 100644
+--- a/config.py
++++ b/config.py
+@@ -1,39 +1,80 @@
+ from pathlib import Path
+ import logging
+ import os as _os
++from typing import Dict, Optional, Union
+ 
+ # ───────────────────────────────────────────────────────────────────────────
+ # 0. Base paths
+ # ───────────────────────────────────────────────────────────────────────────
+ BASE_DIR   = Path(__file__).resolve().parent
+ DATA_DIR   = BASE_DIR / "data"
+ OUTPUT_DIR = BASE_DIR / "output"
+ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+ 
+ logger = logging.getLogger(__name__)
+ 
++# ───────────────────────────────────────────────────────────────────────────
++# Category helpers
++# ───────────────────────────────────────────────────────────────────────────
++
++CATEGORIES = ["fruit", "seafood", "veggie", "meat", "generic"]
++
++CATEGORY_DIR_MAP = {
++    "fruit":   ["fruit", "fruits"],
++    "seafood": ["seafood", "fish"],
++    "veggie":  ["veggie", "vegetable"],
++    "meat":    ["meat", "livestock"],
++}
++
++CATEGORY_OVERRIDES: Dict[str, str] = {}
++
++DEFAULT_CATEGORY = "generic"
++
++
++def infer_category(dataset_path: Union[str, Path], sku: Optional[str] = None) -> str:
++    """Infer category from dataset path or explicit overrides.
++
++    - Honors ``CATEGORY_OVERRIDES`` first when ``sku`` is provided.
++    - Matches directory tokens defined in ``CATEGORY_DIR_MAP`` against the
++      normalized dataset path.
++    - Falls back to ``DEFAULT_CATEGORY`` when no match is found.
++    """
++
++    if sku and sku in CATEGORY_OVERRIDES:
++        return CATEGORY_OVERRIDES[sku]
++
++    normalized_path = Path(dataset_path).as_posix().lower()
++    parts = {p.lower() for p in Path(normalized_path).parts}
++
++    for category, dir_names in CATEGORY_DIR_MAP.items():
++        for token in dir_names:
++            if token.lower() in parts:
++                return category
++
++    return DEFAULT_CATEGORY
++
+ REVIEW_DATA_DIR     = DATA_DIR / "review"
+ COMMUNITY_DATA_DIR  = DATA_DIR / "community"
+ REVIEW_DATA_DIR.mkdir(parents=True, exist_ok=True)
+ COMMUNITY_DATA_DIR.mkdir(parents=True, exist_ok=True)
+ 
+ INPUT_FILES = sorted(
+     p for p in REVIEW_DATA_DIR.glob("*.xlsx")
+     if not p.name.startswith("~$")
+ )
+ 
+ # ───────────────────────────────────────────────────────────────────────────
+ # 1. Loader / Preprocess
+ # ───────────────────────────────────────────────────────────────────────────
+ REQUIRED_COLUMNS = ["review"]
+ KEEP_META        = True
+ 
+ # 리뷰 고유 ID 컬럼 (reset_index() 통해 부여)
+ REVIEW_ID_COL    = "review_id"
+ 
+ # ───────────────────────────────────────────────────────────────────────────
+ # 2. Embedding
+ # ───────────────────────────────────────────────────────────────────────────
+ # 임베딩 설정 (backend: local | openai)
+ embed = {
+     "backend": "openai",                 # "local" | "openai"
+diff --git a/main.py b/main.py
+index 9fd1f0afb543947c325f4cef2ff8469d0c7027c3..d9810cf5300dd35cc73f8eb4758fba841701b282 100644
+--- a/main.py
++++ b/main.py
+@@ -27,51 +27,57 @@ except Exception:
+ 
+ try:
+     import tqdm
+     tqdm.tqdm = lambda *a, **k: iter(a[0]) if a else iter([])
+ except Exception:
+     pass
+ 
+ import config
+ from pipeline.loader import load_reviews
+ from pipeline.preprocess import preprocess_reviews
+ from pipeline.clause_splitter import split_clauses
+ from pipeline.absa import classify_clauses
+ from pipeline.embedder import get_embedder, CachingEmbedder, _get_model # embed_reviews is now deprecated
+ from pipeline.reducer import reduce_embeddings
+ from pipeline.clusterer import cluster_embeddings, evaluate_clusters
+ from pipeline.tuner import get_cluster_params
+ from pipeline.summarizer import extract_representatives
+ from pipeline.mergy import merge_similar_clusters
+ from pipeline.keywords import extract_keywords
+ from pipeline.exporter import (
+     save_clustered_clauses,
+     save_clauses_summary_json,
+ )
+ from pipeline.idmap import assign_stable_ids
+ from pipeline.report import save_client_report
+-from pipeline.refiner import load_facets_yml, refine_clusters, _normalize_rows, apply_facet_routing
++from pipeline.refiner import (
++    load_facets_for_category,
++    load_facets_yml,
++    refine_clusters,
++    _normalize_rows,
++    apply_facet_routing,
++)
+ from utils.runmeta import write_run_manifest, write_meta_json
+ 
+ # from sentence_transformers import SentenceTransformer # Not needed here anymore, moved to embedder.py
+ 
+ try:
+     import yaml
+ except ImportError as _e:
+     raise SystemExit("PyYAML가 필요합니다. 가상환경에서: pip install pyyaml") from _e
+ 
+ # --- 로그 & 경고 억제 ---
+ logging.getLogger("pyabsa").setLevel(logging.ERROR)
+ logging.getLogger("transformers").setLevel(logging.ERROR)
+ logging.getLogger("kss").setLevel(logging.ERROR)
+ logging.getLogger("weasel").setLevel(logging.ERROR)
+ warnings.filterwarnings("ignore", category=DeprecationWarning)
+ warnings.filterwarnings("ignore", category=ResourceWarning)
+ 
+ logger = logging.getLogger(__name__)
+ 
+ # --- 유틸: 라벨 오프셋/병합 ---
+ def _offset_labels(labels: np.ndarray, base: int) -> np.ndarray:
+     """
+     HDBSCAN 라벨을 폴라리티별 base(neg=0, neu=1000, pos=2000)만큼 이동.
+     -1(노이즈) → base+999 숫자화.
+     """
+@@ -325,50 +331,56 @@ def run_full_pipeline(
+         logging.exception("   WARNING Refinement disabled (init failed). Check facets/thresholds YAML & schema.")
+         facets_obj = None
+         refine_enabled = False
+         semantic_helper_model = None
+         semantic_helper_name = None
+         semantic_helper_device = None
+     finally:
+         if norm_tmp_path and norm_tmp_path.exists():
+             try:
+                 norm_tmp_path.unlink(missing_ok=True)
+             except Exception:
+                 pass
+ 
+     if not refine_enabled_cfg:
+         logging.info("   Refinement is disabled by config.")
+ 
+     refine_enabled = refine_enabled_cfg and refine_enabled and (facets_obj is not None)
+ 
+     # --- 파일 루프 ---
+     for idx, file_path in enumerate(input_files, start=1):
+         logging.info("🔄 [%d/%d] Processing %s", idx, total, file_path.name)
+         stem_effective = (save_stem or file_path.stem)
+         out_dir = output_dir / stem_effective
+         out_dir.mkdir(parents=True, exist_ok=True)
+ 
++        category = config.infer_category(file_path, stem_effective)
++        logging.info("   Category inferred for %s: %s", stem_effective, category)
++        facet_config = load_facets_for_category(
++            category, sku=stem_effective, fallback=facets_obj
++        )
++
+         # 1) Load + preprocess
+         t0 = time.time()
+         logging.info("   1) Loading & preprocessing reviews…")
+ 
+         df = load_reviews(file_path)
+         df = preprocess_reviews(df)
+ 
+         if df.columns.duplicated().any():
+             df = df.loc[:, ~df.columns.duplicated()]
+ 
+         if "review" not in df.columns:
+             _cands = ["text", "body", "content", "contents", "summary"]
+             _hit = next((c for c in _cands if c in df.columns), None)
+             if _hit:
+                 df = df.rename(columns={_hit: "review"})
+             else:
+                 raise SystemExit("[load] text column 'review' not found and no fallback candidate present.")
+ 
+         rid_col = getattr(config, "REVIEW_ID_COL", "review_id")
+         if rid_col not in df.columns:
+             df = df.reset_index(drop=False).rename(columns={"index": rid_col})
+         df[rid_col] = df[rid_col].astype(str)
+ 
+         logging.info("      → Loaded %d reviews (%.1fs)", len(df), time.time() - t0)
+ 
+@@ -588,50 +600,53 @@ def run_full_pipeline(
+                     refined_df = None
+             else:
+                 logging.info("   [REFINE] skipped (enabled=%s, facets_obj=%s)", refine_enabled, type(facets_obj).__name__ if facets_obj is not None else None)
+ 
+ 
+             # --- 오프셋 적용 후 통합 ---
+             base = base_map[pol]
+             labels_off = _offset_labels(labels_raw, base)
+             reps_off = _relabel_dict(reps, base)
+             kw_off = _relabel_dict(kw, base)
+ 
+             if refined_df is not None:
+                 clause_frame = refined_df.copy()
+                 clause_frame["cluster_label"] = labels_off  # offset 적용
+                 if "polarity" not in clause_frame.columns:
+                     clause_frame["polarity"] = pol
+             else:
+                 clause_frame = sub_df.assign(cluster_label=labels_off, polarity=pol)
+ 
+             clause_frame = apply_facet_routing(
+                 clause_frame,
+                 clause_embs=semantic_clause_embs if semantic_clause_embs is not None else embeddings,
+                 facets=facets_obj,
+                 top_k=int(refine_th.get("top_k_facets", 2)),
+                 threshold=float(refine_th.get("facet_threshold", 0.32)),
++                category=category,
++                facet_config=facet_config,
++                sku=stem_effective,
+             )
+ 
+             combined_clause_df_list.append(clause_frame)
+ 
+             combined_reps.update(reps_off)
+             combined_kw.update(kw_off)
+ 
+         if not combined_clause_df_list:
+             logging.info("   ⏭️ No clauses passed threshold for any polarity — nothing to save.")
+             logging.info("✅ Completed %s (%d/%d)\n", stem_effective, idx, total)
+             continue
+ 
+         # -- after concatenation, fail-fast if facet columns missing ------------------
+         combined_clause_df = pd.concat(combined_clause_df_list, ignore_index=True)
+         has_f1 = "facet_top1" in combined_clause_df.columns
+         has_fb = "facet_bucket" in combined_clause_df.columns
+ 
+         if not has_f1:
+             if has_fb:
+                 logging.warning(
+                     "   [WARN] facet_top1 missing but facet_bucket present — copying bucket values"
+                 )
+             else:
+                 logging.warning(
+                     "   [WARN] No facet columns detected — leaving facet_top1 as nulls"
+diff --git a/pipeline/refiner.py b/pipeline/refiner.py
+index 508ba92406cefbeb387322e54cb0b512428a333b..183ef18bd27be63f83433a29389df48cf3b33564 100644
+--- a/pipeline/refiner.py
++++ b/pipeline/refiner.py
+@@ -8,50 +8,51 @@
+ from __future__ import annotations
+ 
+ from dataclasses import dataclass
+ from typing import List, Dict, Tuple, Optional, Any
+ 
+ import logging
+ import numpy as np
+ import pandas as pd
+ from sklearn.cluster import KMeans
+ from sklearn.metrics import silhouette_score
+ 
+ try:
+     import yaml  # pyyaml
+ except Exception:  # pragma: no cover
+     yaml = None
+ 
+ from pathlib import Path
+ import io
+ import os
+ 
+ logger = logging.getLogger(__name__)
+ 
+ __all__ = [
+     "Facet",
+     "load_facets_yml",
++    "load_facets_for_category",
+     "apply_facet_routing",
+     "refine_clusters",
+ ]
+ 
+ # ---------------------------------------------------------------------
+ # Models
+ # ---------------------------------------------------------------------
+ 
+ @dataclass
+ class Facet:
+     id: str
+     name: str
+     desc: str
+     emb: np.ndarray  # normalized vector
+ 
+ 
+ # ---------------------------------------------------------------------
+ # Utilities
+ # ---------------------------------------------------------------------
+ 
+ def _normalize_rows(x: np.ndarray) -> np.ndarray:
+     x = np.asarray(x, dtype=np.float32)
+     if x.ndim != 2:
+         raise ValueError("expected 2-D array for normalization")
+     n = np.linalg.norm(x, axis=1, keepdims=True) + 1e-12
+@@ -178,50 +179,116 @@ def load_facets_yml(path: str | Path, facet_embedder, *args, **kwargs) -> List[F
+     try:
+         vecs = facet_embedder.encode(
+             descs,
+             batch_size=64,
+             convert_to_numpy=True,
+             normalize_embeddings=True,
+             show_progress_bar=False,
+         )
+         vecs = _normalize_rows(vecs)
+     except Exception as e:
+         logger.exception("[FACETS] embedding failed: %s", e)
+         return None
+ 
+     facets: List[Facet] = [Facet(id=ids[i], name=names[i], desc=descs[i], emb=vecs[i]) for i in range(len(names))]
+     logger.info(
+         "[FACETS] loaded=%d usable (skipped=%d) | emb.shape=(%d,%d) | head=%s",
+         len(facets),
+         skipped,
+         vecs.shape[0],
+         vecs.shape[1],
+         [f.name for f in facets[:3]],
+     )
+     return facets
+ 
+ 
++def load_facets_for_category(
++    category: str,
++    sku: Optional[str] = None,
++    *,
++    path: str | Path = Path("rules/facets_by_category.yml"),
++    fallback: Any = None,
++) -> Any:
++    """Load category-specific facet config from ``rules/facets_by_category.yml``.
++
++    Returns the category node when present, otherwise falls back to ``fallback``
++    (typically the global facet config). Missing/parse errors are logged but do
++    not raise so downstream routing can continue unchanged.
++    """
++
++    normalized_category = (category or "").strip().lower() or "generic"
++    cfg_path = Path(path)
++
++    if yaml is None:  # pragma: no cover - defensive
++        logger.warning(
++            "[FACETS] PyYAML unavailable; skipping category facets and using fallback"
++        )
++        return fallback
++
++    if not cfg_path.exists():
++        logger.warning(
++            "[FACETS] category facets file missing at %s; using fallback facets", cfg_path
++        )
++        return fallback
++
++    try:
++        payload = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
++    except Exception:
++        logger.warning(
++            "[FACETS] failed to parse %s; using fallback facets", cfg_path, exc_info=True
++        )
++        return fallback
++
++    categories = payload.get("categories") if isinstance(payload, dict) else {}
++    selected = None
++    if isinstance(categories, dict):
++        selected = categories.get(normalized_category)
++        used_category = normalized_category
++        if selected is None and "generic" in categories:
++            selected = categories.get("generic")
++            used_category = "generic"
++    else:
++        used_category = normalized_category
++
++    if selected is None:
++        logger.info(
++            "[FACETS] category '%s' not found in %s; using fallback facets (sku=%s)",
++            normalized_category,
++            cfg_path,
++            sku or "-",
++        )
++        return fallback
++
++    logger.info(
++        "[FACETS] category facets selected: cat=%s sku=%s source=%s",
++        used_category,
++        sku or "-",
++        cfg_path,
++    )
++    return selected
++
++
+ # ---------------------------------------------------------------------
+ # Facet routing
+ # ---------------------------------------------------------------------
+ 
+ def route_to_facets(
+     clause_embs: np.ndarray,
+     facets: List[Facet],
+     *,
+     top_k: int = 2,
+     score_threshold: float = 0.32,
+ ) -> Tuple[List[Optional[str]], List[List[Tuple[str, float]]]]:
+     """
+     Compute cosine similarity (dot on normalized vectors) between each clause and facet.
+     Returns:
+       top1 list of facet ids (or None) and topk list of (facet_id, score).
+     """
+     if not facets:
+         return [None] * len(clause_embs), [[] for _ in range(len(clause_embs))]
+     F = np.stack([f.emb for f in facets], axis=0)  # (F, D), already normalized
+     X = _normalize_rows(clause_embs)               # (N, D)
+     sims = X @ F.T                                 # (N, F)
+ 
+     k = max(1, min(top_k, sims.shape[1]))
+     # partial top-k then stable sort
+     idx_part = np.argpartition(-sims, kth=k - 1, axis=1)[:, :k]
+@@ -232,50 +299,53 @@ def route_to_facets(
+ 
+     top1: List[Optional[str]] = []
+     topk: List[List[Tuple[str, float]]] = []
+ 
+     for i in range(sims.shape[0]):
+         pairs: List[Tuple[str, float]] = []
+         for j in range(k):
+             score = float(sims_sorted[i, j])
+             if score >= score_threshold:
+                 pairs.append((facets[idx_sorted[i, j]].id, score))
+         topk.append(pairs)
+         top1.append(pairs[0][0] if pairs else None)
+ 
+     return top1, topk
+ 
+ 
+ def apply_facet_routing(
+     df: pd.DataFrame,
+     facets: List[Facet],
+     *,
+     clause_embs: Optional[np.ndarray] = None,
+     embedder: Optional[Any] = None,
+     text_column: str = "clause",
+     top_k: int = 2,
+     threshold: float = 0.32,
++    category: Optional[str] = None,
++    facet_config: Any = None,
++    sku: Optional[str] = None,
+ ) -> pd.DataFrame:
+     """
+     Fill facet_top1 / facet_topk using cosine similarity to facets.
+ 
+     Inputs:
+       - facets: List[Facet] with normalized emb vectors
+       - clause_embs: if provided, use directly; else, encode df[text_column] with embedder
+       - embedder: SentenceTransformer-like (encode with normalize_embeddings=True)
+     Notes:
+       - Existing values are preserved; only NaN/blank cells are filled.
+       - facet_topk is a JSON-like string "[(id, score), ...]" for readability.
+     """
+     if df is None or df.empty or not facets:
+         return df
+ 
+     # get clause vectors
+     if clause_embs is None:
+         if embedder is None:
+             logger.warning("[FACETS] no clause_embs and no embedder; routing skipped")
+             return df
+         texts = df[text_column].astype(str).tolist()
+         clause_embs = embedder.encode(
+             texts,
+             batch_size=256,
+             convert_to_numpy=True,
+diff --git a/rules/facets_by_category.yml b/rules/facets_by_category.yml
+new file mode 100644
+index 0000000000000000000000000000000000000000..6987666e1eb4b1e3cf8966afe3d0a44ba895b0e4
+--- /dev/null
++++ b/rules/facets_by_category.yml
+@@ -0,0 +1,408 @@
++categories:
++  fruit:
++    facets:
++      sweetness:
++        label_ko: "당도"
++        description_ko: "단맛, 달콤함, 고당도 등"
++        positive_keywords:
++          - "단맛"
++          - "달콤하다"
++          - "달콤함"
++          - "고당도"
++          - "달달하다"
++          - "당도가 높다"
++          - "당도가 좋다"
++          - "꿀맛"
++        negative_keywords:
++          - "싱겁다"
++          - "밍밍하다"
++          - "무맛"
++          - "당도가 낮다"
++          - "달지 않다"
++          - "맛이 없다"
++          - "밍밍한 맛"
++          - "싱거운 맛"
++      aroma:
++        label_ko: "향"
++        description_ko: "향긋함, 과일향, 냄새 관련 피드백"
++        positive_keywords:
++          - "향긋하다"
++          - "향이 좋다"
++          - "달달한 향"
++          - "과일향"
++          - "향기롭다"
++        negative_keywords:
++          - "향이 없다"
++          - "향이 안 난다"
++          - "냄새가 이상하다"
++          - "냄새가 난다"
++          - "퀴퀴하다"
++      texture:
++        label_ko: "식감"
++        description_ko: "아삭함, 탱글함, 물렁함 등"
++        positive_keywords:
++          - "아삭아삭하다"
++          - "부드럽다"
++          - "탱글하다"
++          - "쫄깃하다"
++          - "촉촉하다"
++        negative_keywords:
++          - "물컹하다"
++          - "푸석푸석하다"
++          - "질기다"
++          - "딱딱하다"
++          - "흐물거리다"
++      ripeness:
++        label_ko: "과숙 정도"
++        description_ko: "덜 익음, 과숙, 적정 숙성 여부"
++        positive_keywords:
++          - "잘 익다"
++          - "적당히 익다"
++          - "익음"
++          - "숙성 잘됨"
++        negative_keywords:
++          - "덜 익다"
++          - "미숙"
++          - "시다"
++          - "과숙"
++          - "너무 익다"
++          - "물러지다"
++      appearance:
++        label_ko: "외관"
++        description_ko: "색감, 흠집, 멍, 변색 등"
++        positive_keywords:
++          - "색이 예쁘다"
++          - "선명한 색"
++          - "윤기나다"
++          - "모양이 좋다"
++          - "흠집이 없다"
++        negative_keywords:
++          - "멍들다"
++          - "상처"
++          - "곰팡이"
++          - "변색"
++          - "모양이 불량하다"
++          - "흑점"
++      freshness:
++        label_ko: "신선도"
++        description_ko: "싱싱함, 상태, 냄새 등"
++        positive_keywords:
++          - "신선하다"
++          - "싱싱하다"
++          - "상태가 좋다"
++          - "아삭하다"
++        negative_keywords:
++          - "신선하지 않다"
++          - "싱싱하지 않다"
++          - "시들다"
++          - "상하다"
++          - "오래되다"
++          - "냄새가 난다"
++      size_weight_diff:
++        label_ko: "크기/무게 차"
++        description_ko: "크기 편차, 중량 만족도"
++        positive_keywords:
++          - "크다"
++          - "알이 굵다"
++          - "큼직하다"
++          - "중량이 넉넉하다"
++        negative_keywords:
++          - "작다"
++          - "알이 작다"
++          - "크기 제각각"
++          - "중량 부족"
++          - "양이 적다"
++      price:
++        label_ko: "가격"
++        description_ko: "가격 대비 만족도"
++        positive_keywords:
++          - "가성비가 좋다"
++          - "저렴하다"
++          - "합리적인 가격"
++        negative_keywords:
++          - "비싸다"
++          - "가격이 높다"
++          - "값비싸다"
++          - "가성비가 나쁘다"
++          - "돈이 아깝다"
++      packaging_delivery:
++        label_ko: "패키지/배송"
++        description_ko: "포장 상태, 냉장/아이스팩, 배송 속도"
++        positive_keywords:
++          - "포장이 깔끔하다"
++          - "신선포장"
++          - "배송이 빠르다"
++          - "아이스팩이 충분하다"
++        negative_keywords:
++          - "포장이 불량하다"
++          - "포장이 터졌다"
++          - "배송이 늦다"
++          - "아이스팩이 녹았다"
++          - "상온 배송"
++          - "박스가 찌그러졌다"
++  seafood:
++    facets:
++      texture:
++        label_ko: "식감"
++        description_ko: "쫄깃함, 탱글함, 물컹함 등"
++        positive_keywords:
++          - "쫄깃하다"
++          - "탱글하다"
++          - "부드럽다"
++          - "탄력이 있다"
++        negative_keywords:
++          - "질기다"
++          - "물컹하다"
++          - "푸석하다"
++          - "흐물거리다"
++          - "딱딱하다"
++      size_weight:
++        label_ko: "크기/중량"
++        description_ko: "크기, 살점 양, 중량 만족도"
++        positive_keywords:
++          - "크다"
++          - "통통하다"
++          - "두툼하다"
++          - "중량이 넉넉하다"
++        negative_keywords:
++          - "작다"
++          - "살이 적다"
++          - "양이 적다"
++          - "사이즈가 작다"
++          - "빈약하다"
++      freshness:
++        label_ko: "신선도"
++        description_ko: "싱싱함, 비린내, 상함 등"
++        positive_keywords:
++          - "싱싱하다"
++          - "신선하다"
++          - "비리지 않다"
++          - "냄새가 없다"
++          - "살아있다"
++        negative_keywords:
++          - "비린내"
++          - "비리다"
++          - "상하다"
++          - "신선하지 않다"
++          - "갈변"
++          - "살아있지 않다"
++          - "죽어있다"
++          - "냄새가 심하다"
++      prep_state:
++        label_ko: "손질 상태"
++        description_ko: "손질 여부, 내장/이물 제거"
++        positive_keywords:
++          - "손질이 잘 되어 있다"
++          - "손질되어 있다"
++          - "손질이 깔끔하다"
++        negative_keywords:
++          - "손질이 안 되어 있다"
++          - "손질이 불량하다"
++          - "내장이 제거되지 않았다"
++          - "모래가 많다"
++          - "손질이 번거롭다"
++      price:
++        label_ko: "가격"
++        description_ko: "가격 대비 만족도"
++        positive_keywords:
++          - "가성비가 좋다"
++          - "저렴하다"
++          - "가격이 합리적이다"
++        negative_keywords:
++          - "비싸다"
++          - "가격이 높다"
++          - "값이 세다"
++          - "가성비가 나쁘다"
++      packaging_delivery:
++        label_ko: "패키지/배송"
++        description_ko: "포장 상태, 냉매, 배송 속도"
++        positive_keywords:
++          - "포장이 깔끔하다"
++          - "아이스팩이 충분하다"
++          - "배송이 빠르다"
++          - "신선하게 도착했다"
++        negative_keywords:
++          - "포장이 불량하다"
++          - "배송이 느리다"
++          - "아이스팩이 녹았다"
++          - "상온 배송"
++          - "포장이 터졌다"
++  veggie:
++    facets:
++      freshness:
++        label_ko: "신선도"
++        description_ko: "싱싱함, 시듦, 변색 등"
++        positive_keywords:
++          - "신선하다"
++          - "싱싱하다"
++          - "상태가 좋다"
++          - "아삭하다"
++        negative_keywords:
++          - "신선하지 않다"
++          - "시들다"
++          - "시든 상태"
++          - "상하다"
++          - "누렇다"
++      taste:
++        label_ko: "맛"
++        description_ko: "풍미, 쓴맛/떫은맛 여부"
++        positive_keywords:
++          - "맛있다"
++          - "달다"
++          - "달달하다"
++          - "담백하다"
++          - "고소하다"
++        negative_keywords:
++          - "맛이 없다"
++          - "쓰다"
++          - "밍밍하다"
++          - "떫다"
++      texture:
++        label_ko: "식감"
++        description_ko: "아삭함, 물컹함, 질김 등"
++        positive_keywords:
++          - "아삭아삭하다"
++          - "부드럽다"
++          - "촉촉하다"
++        negative_keywords:
++          - "질기다"
++          - "질척거리다"
++          - "물컹하다"
++          - "푸석푸석하다"
++      appearance:
++        label_ko: "외관"
++        description_ko: "색감, 흠집, 벌레 먹음 등"
++        positive_keywords:
++          - "색이 선명하다"
++          - "모양이 좋다"
++          - "흠집이 없다"
++          - "깨끗하다"
++        negative_keywords:
++          - "변색"
++          - "상처"
++          - "얼룩"
++          - "벌레 먹다"
++      size:
++        label_ko: "크기"
++        description_ko: "크기 만족도, 균일성"
++        positive_keywords:
++          - "크다"
++          - "알이 굵다"
++          - "두툼하다"
++          - "큼직하다"
++        negative_keywords:
++          - "작다"
++          - "크기 제각각"
++          - "양이 적다"
++          - "빈약하다"
++      price:
++        label_ko: "가격"
++        description_ko: "가격 대비 만족도"
++        positive_keywords:
++          - "가성비가 좋다"
++          - "저렴하다"
++          - "가격이 괜찮다"
++        negative_keywords:
++          - "비싸다"
++          - "가격이 높다"
++          - "값이 세다"
++          - "가성비가 나쁘다"
++      packaging_delivery:
++        label_ko: "패키지/배송"
++        description_ko: "포장 상태, 신선 포장, 배송 속도"
++        positive_keywords:
++          - "포장이 깔끔하다"
++          - "신선하게 배송된다"
++          - "배송이 빠르다"
++          - "아이스팩이 충분하다"
++        negative_keywords:
++          - "포장이 불량하다"
++          - "배송이 늦다"
++          - "아이스팩이 녹았다"
++          - "상온 배송"
++          - "포장이 터졌다"
++  meat:
++    facets:
++      freshness:
++        label_ko: "신선도/상태/냄새"
++        description_ko: "신선도, 냄새, 변색 여부"
++        positive_keywords:
++          - "신선하다"
++          - "상태가 좋다"
++          - "냄새가 없다"
++          - "육즙이 있다"
++        negative_keywords:
++          - "냄새가 난다"
++          - "잡내가 있다"
++          - "상하다"
++          - "신선하지 않다"
++          - "색이 변했다"
++      texture:
++        label_ko: "식감"
++        description_ko: "부드러움, 연함, 질김 등"
++        positive_keywords:
++          - "부드럽다"
++          - "연하다"
++          - "쫄깃하다"
++          - "육즙이 풍부하다"
++        negative_keywords:
++          - "질기다"
++          - "퍽퍽하다"
++          - "딱딱하다"
++          - "건조하다"
++      appearance:
++        label_ko: "외관"
++        description_ko: "마블링, 색, 핏물 등"
++        positive_keywords:
++          - "마블링이 좋다"
++          - "색이 선명하다"
++          - "윤기가 있다"
++          - "지방이 적당하다"
++        negative_keywords:
++          - "지방이 너무 많다"
++          - "색이 변했다"
++          - "핏물이 많다"
++          - "윤기가 없다"
++      thickness_size_weight:
++        label_ko: "두께/크기/중량"
++        description_ko: "두께, 크기, 양에 대한 만족도"
++        positive_keywords:
++          - "두툼하다"
++          - "두께가 적당하다"
++          - "크다"
++          - "양이 많다"
++          - "푸짐하다"
++        negative_keywords:
++          - "얇다"
++          - "양이 적다"
++          - "작다"
++          - "불균일하다"
++          - "생각보다 적다"
++      price:
++        label_ko: "가격"
++        description_ko: "가격 대비 만족도"
++        positive_keywords:
++          - "가성비가 좋다"
++          - "저렴하다"
++          - "가격이 합리적이다"
++        negative_keywords:
++          - "비싸다"
++          - "가격이 높다"
++          - "값이 세다"
++          - "가성비가 나쁘다"
++      packaging_delivery:
++        label_ko: "패키지/배송"
++        description_ko: "포장 상태, 냉매, 배송 속도"
++        positive_keywords:
++          - "포장이 깔끔하다"
++          - "아이스팩이 충분하다"
++          - "배송이 빠르다"
++          - "신선하게 도착했다"
++        negative_keywords:
++          - "포장이 불량하다"
++          - "배송이 느리다"
++          - "아이스팩이 녹았다"
++          - "상온 배송"
++          - "포장이 터졌다"
++  generic:
++    facets: {}
