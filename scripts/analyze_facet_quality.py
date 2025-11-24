@@ -8,29 +8,48 @@ ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
 
 def load_all_clauses():
     """
-    output/* 폴더 아래의 *_clauses_clustered_*.xlsx 를 전부 읽어서
-    하나의 DataFrame으로 합칩니다.
+    output/<sku>/<sku>_clauses_clustered_*.xlsx 파일 중
+    각 sku마다 '최신 파일' 하나씩만 읽어서 합칩니다.
     """
     base = Path("output")
-    clause_files = sorted(base.glob("*/*_clauses_clustered_*.xlsx"))
+    clause_files = []
+
+    # sku 디렉토리 순회
+    for sku_dir in base.iterdir():
+        if not sku_dir.is_dir():
+            continue
+
+        # sku명
+        sku = sku_dir.name
+
+        # 파일 패턴 수집
+        files = list(sku_dir.glob(f"{sku}_clauses_clustered_*.xlsx"))
+        if not files:
+            continue
+
+        # 타임스탬프 기반 최신 파일 선택
+        latest = max(files, key=lambda p: p.stem.split("_")[-1])
+        clause_files.append(latest)
+        print(f"[INFO] Using latest file for {sku}: {latest.name}")
+
     if not clause_files:
-        print("No clause files found under output/*/*_clauses_clustered_*.xlsx")
+        print("No latest clause files found.")
         return None
 
     frames = []
     for path in clause_files:
-        sku = path.parent.name  # sweet_potato, abalone 등
+        sku = path.parent.name
         try:
             df = pd.read_excel(path)
         except Exception as e:
             print(f"Failed to read {path}: {e}")
             continue
 
-        # sku 컬럼이 없으면 파일명에서 채운다
+        # sku 컬럼이 없으면 채운다
         if "sku" not in df.columns:
             df["sku"] = sku
 
-        # polarity를 소문자 문자열로 정규화
+        # polarity 정규화
         if "polarity" in df.columns:
             df["polarity"] = df["polarity"].astype(str).str.lower()
 
@@ -39,8 +58,8 @@ def load_all_clauses():
     if not frames:
         return None
 
-    all_df = pd.concat(frames, ignore_index=True)
-    return all_df
+    print(f"[INFO] Loaded {len(frames)} latest files.")
+    return pd.concat(frames, ignore_index=True)
 
 
 def compute_facet_bucket_stats(df):
