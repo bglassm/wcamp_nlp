@@ -71,18 +71,73 @@ def _materialize_bucket(df: pd.DataFrame) -> pd.Series:
         return s.astype(str).fillna("")
 
 # ---------------------------------------------------------------------
-# A. 대표어 요약 테이블: [감정, 분류, 대표어, 개수]
+# A. 대표어 요약 테이블: [감정, 분류, 대표어, 개수, 대표 문장]  # CHANGED: 대표 문장 컬럼 추가
 # ---------------------------------------------------------------------
+# NEW: facet/keyword 기반 대표어 라벨 생성 헬퍼
+def _build_keyword_label(kw: Optional[Dict[int, List[str]]]) -> Dict[int, str]:
+    if not kw:
+        return {}
+
+    topk = getattr(config, "CLUSTER_NAME_TOPK", 2)
+    labels: Dict[int, str] = {}
+    for k, v in kw.items():
+        try:
+            cid = int(k)
+        except Exception:
+            continue
+
+        if isinstance(v, (list, tuple)):
+            pieces = [str(x).strip() for x in v[:topk] if str(x).strip()]
+            label = "·".join(pieces)
+        else:
+            label = str(v).strip()
+
+        if label:
+            labels[cid] = label
+
+    return labels
+
+
+# NEW: facet 텍스트 정리
+def _format_facet_label(raw: object) -> str:
+    if raw is None:
+        return ""
+    s = str(raw).strip()
+    if s == "" or s.lower() in {"nan", "none"}:
+        return ""
+
+    suffixes = ["_negative", "_neutral", "_positive"]
+    lower_s = s.lower()
+    for suf in suffixes:
+        if lower_s.endswith(suf):
+            return s[: -len(suf)]
+    return s
+
+
+# NEW: facet 라벨 + 키워드 라벨 결합
+def _combine_labels(facet_label: str, kw_label: str, fallback: str) -> str:
+    facet_label = facet_label.strip()
+    kw_label = kw_label.strip()
+    if facet_label and kw_label:
+        return f"{facet_label} – {kw_label}"
+    if facet_label:
+        return facet_label
+    if kw_label:
+        return kw_label
+    return fallback
+
+
 def _build_rep_summary_table(
     clause_df_with_meta: pd.DataFrame,
     reps: Dict[int, List[str]],
+    kw: Optional[Dict[int, List[str]]] = None,
 ) -> pd.DataFrame:
     df = clause_df_with_meta.copy()
     # 노이즈(-1 또는 999류) 제외
     if "cluster_label" in df.columns:
         df = df[pd.to_numeric(df["cluster_label"], errors="coerce").fillna(-1).astype(int) >= 0]
     if df.empty:
-        return pd.DataFrame(columns=["감정", "분류", "대표어", "개수"])
+        return pd.DataFrame(columns=["감정", "분류", "대표어", "개수", "대표 문장"])
 
     # ---- 파셋(분류) 소스 유연 처리 ----
     # 우선순위: facet_top1 > facet_topk[0] > facet_bucket > (없으면 공백)
@@ -145,15 +200,24 @@ def _build_rep_summary_table(
         .merge(agg_facet[["cluster_label", "분류"]], on="cluster_label", how="left")
     )
 
-    # 대표어(top-1) 붙이기
-    rep_list = []
-    for cid in base["cluster_label"].tolist():
+    kw_labels = _build_keyword_label(kw)  # NEW: 키워드 기반 라벨
+    rep_labels = []
+    rep_full_texts = []
+    for cid, facet_raw in base[["cluster_label", "분류"]].itertuples(index=False):
         entry = reps.get(int(cid), [])
         rep_text = entry[0] if isinstance(entry, list) and len(entry) > 0 else ""
-        rep_list.append(rep_text)
-    base["대표어"] = rep_list
+        rep_full_texts.append(rep_text)
 
-    out = base[["감정", "분류", "대표어", "개수"]].copy()
+        rep_text_short = rep_text[:40].rstrip() + "…" if len(rep_text) > 40 else rep_text
+        facet_label = _format_facet_label(facet_raw)
+        kw_label = kw_labels.get(int(cid), "")
+        label = _combine_labels(facet_label, kw_label, fallback=rep_text_short)  # CHANGED: 대표어는 facet+키워드 라벨
+        rep_labels.append(label)
+
+    base["대표어"] = rep_labels  # 대표어: facet+키워드 기반의 짧은 라벨 (기존: 대표 문장 1개)
+    base["대표 문장"] = rep_full_texts  # NEW: 전체 대표 문장 예시
+
+    out = base[["감정", "분류", "대표어", "개수", "대표 문장"]].copy()
     # 정렬: 감정(neg/neu/pos) → 분류 → 개수 desc
     order_pol = {"negative": 0, "neutral": 1, "positive": 2}
     out["_p"] = out["감정"].map(order_pol).fillna(99)
@@ -239,14 +303,17 @@ def save_client_report(
     clause_df: pd.DataFrame,
     raw_df: pd.DataFrame,
     reps: Dict[int, List[str]],
-    output_path: Path,
+    kw: Optional[Dict[int, List[str]]] = None,
+    output_path: Path | None = None,
 ) -> None:
     """
     생성물:
-    - Sheet1: 대표어 요약 (감정/분류/대표어/개수)
+    - Sheet1: 대표어 요약 (감정/분류/대표어/개수/대표 문장)
     - Sheet2: 데이터 수량 (플랫폼별 수집·분석 수 + 긍/중/부 비율)
     - Sheet3: 연도별 리뷰 비율 (원본 리뷰 기준)
     """
+    if output_path is None:
+        raise ValueError("output_path is required for save_client_report")
     clause_w_meta = _ensure_meta_join(clause_df, raw_df)
 
     facet_col = "facet_bucket" if "facet_bucket" in clause_w_meta.columns else ("facet_top1" if "facet_top1" in clause_w_meta.columns else None)
@@ -260,7 +327,7 @@ def save_client_report(
     if clause_w_meta["분류"].isna().all():
         raise ValueError(f"Facet column '{facet_col}' is entirely NaN — check route_facets() and YAML threshold")
 
-    rep_tbl = _build_rep_summary_table(clause_w_meta, reps)
+    rep_tbl = _build_rep_summary_table(clause_w_meta, reps, kw=kw)  # CHANGED: 키워드 기반 대표어 생성
     plat_tbl = _build_platform_block(clause_w_meta, raw_df)
     year_tbl = _build_year_ratio(raw_df)
 

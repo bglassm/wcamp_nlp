@@ -1,3 +1,5 @@
+import argparse  # NEW: CLI 인자 파싱 추가
+import logging  # NEW: INFO 로깅 추가
 from pathlib import Path
 import pandas as pd
 
@@ -5,11 +7,30 @@ import pandas as pd
 ANALYSIS_DIR = Path("output") / "analysis"
 ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
 
+logger = logging.getLogger(__name__)  # NEW: INFO 로깅용 로거
 
-def load_all_clauses():
+
+def _cluster_timestamp_key(p: Path) -> str:  # NEW: 파일명 타임스탬프 파싱
+    parts = p.stem.split("_")
+    if len(parts) >= 2:
+        return "_".join(parts[-2:])
+    return ""
+
+
+def _select_latest_file(files):  # NEW: 타임스탬프 우선, 실패 시 mtime 최신
+    keyed = {p: _cluster_timestamp_key(p) for p in files}
+    timestamped = {p: ts for p, ts in keyed.items() if ts}
+    if timestamped:
+        return max(timestamped.items(), key=lambda item: item[1])[0]
+    return max(files, key=lambda p: p.stat().st_mtime)
+
+
+def load_all_clauses(strategy="latest"):  # CHANGED: strategy 파라미터 추가
     """
-    output/<sku>/<sku>_clauses_clustered_*.xlsx 파일 중
-    각 sku마다 '최신 파일' 하나씩만 읽어서 합칩니다.
+    output/<sku>/<sku>_clauses_clustered_*.xlsx 파일을 모아 DataFrame을 만듭니다.
+
+    strategy="latest" → sku별 최신 파일 1개만 사용 (기본값)
+    strategy="all" → sku별 모든 clustered 파일 사용
     """
     base = Path("output")
     clause_files = []
@@ -27,14 +48,23 @@ def load_all_clauses():
         if not files:
             continue
 
-        # 타임스탬프 기반 최신 파일 선택
-        latest = max(files, key=lambda p: p.stem.split("_")[-1])
-        clause_files.append(latest)
-        print(f"[INFO] Using latest file for {sku}: {latest.name}")
+        if strategy == "all":  # NEW: 모든 파일 사용
+            clause_files.extend(files)
+        elif strategy == "latest":  # NEW: 최신 파일만 선택
+            clause_files.append(_select_latest_file(files))
+        else:
+            raise ValueError(f"Unknown strategy: {strategy}")
 
     if not clause_files:
-        print("No latest clause files found.")
+        print("No clause files found.")
         return None
+
+    logger.info(  # NEW: 선택된 파일 목록을 INFO 로그로 남김
+        "[ANALYZE] using %d clustered files (strategy=%s); sample=%s",
+        len(clause_files),
+        strategy,
+        [p.name for p in clause_files[:5]],
+    )
 
     frames = []
     for path in clause_files:
@@ -58,7 +88,7 @@ def load_all_clauses():
     if not frames:
         return None
 
-    print(f"[INFO] Loaded {len(frames)} latest files.")
+    print(f"[INFO] Loaded {len(frames)} clause files.")  # CHANGED: 메시지 수정
     return pd.concat(frames, ignore_index=True)
 
 
@@ -209,8 +239,19 @@ def compute_bucket_samples(df, samples_per_combo=50, random_state=42):
     print(f"saved {out_path}")
 
 
-def main():
-    df = load_all_clauses()
+def main():  # CHANGED: argparse 적용 및 strategy 전달
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--strategy",
+        choices=["latest", "all"],
+        default="latest",
+        help="clustered 파일 로딩 전략 (default: latest)",
+    )
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO)
+
+    df = load_all_clauses(strategy=args.strategy)
     if df is None:
         print("No data loaded.")
         return

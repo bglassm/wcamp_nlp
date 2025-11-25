@@ -692,6 +692,7 @@ def run_full_pipeline(
             clause_df=combined_clause_df,
             raw_df=df,
             reps=combined_reps,
+            kw=combined_kw,  # CHANGED: 키워드 전달하여 facet+키워드 기반 대표어 생성
             output_path=report_path,
         )
         logging.info("      💾 client report saved → %s", report_path.name)
