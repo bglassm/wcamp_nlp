@@ -128,8 +128,6 @@ def evaluate_clusters(
     n_valid_labels = len(valid_labels)
 
     if valid_n >= 2 and n_valid_labels >= 2:
-        from sklearn.metrics import silhouette_score
-
         try:
             sil_umap = float(silhouette_score(embeddings_2d[mask], labels_str[mask], metric="euclidean"))
         except Exception:
@@ -180,18 +178,22 @@ def evaluate_clusters(
                 x = embeddings_2d[:, 0]
                 y = embeddings_2d[:, 1]
                 labels_str_full = np.array([str(x) for x in np.asarray(labels, dtype=object)])
-                noise_label = str(getattr(config, "OUTLIER_LABEL", "-1"))
+                # NEW: define noise labels to skip in plotting only
+                noise_label_str_candidates = set()  # NEW
+                if hasattr(config, "OUTLIER_LABEL"):
+                    noise_label_str_candidates.add(str(config.OUTLIER_LABEL))  # NEW
+                noise_label_str_candidates.add("-1")  # NEW
                 unique_labels = sorted(set(labels_str_full))
 
-                fig, ax = plt.subplots(figsize=(6, 4))
+                fig, ax = plt.subplots(figsize=(7, 4))  # CHANGED: widen plot for external legend
                 for lab in unique_labels:
+                    lab_str = str(lab)  # NEW
+                    if lab_str in noise_label_str_candidates:  # NEW
+                        continue  # CHANGED: skip plotting noise
                     mask = labels_str_full == lab
                     if not mask.any():
                         continue
-                    if lab == noise_label:
-                        ax.scatter(x[mask], y[mask], s=5, alpha=0.3, color="lightgray", label="noise")
-                    else:
-                        ax.scatter(x[mask], y[mask], s=8, alpha=0.7, label=f"cluster {lab}")
+                    ax.scatter(x[mask], y[mask], s=8, alpha=0.7, label=f"cluster {lab}")
 
                 ax.set_xlabel("UMAP-1")
                 ax.set_ylabel("UMAP-2")
@@ -200,11 +202,22 @@ def evaluate_clusters(
                     ax.set_title(f"Clusters ({title_tag}, {timestamp})")
                 else:
                     ax.set_title(f"Clusters ({title_tag})")
-                ax.legend(loc="best", fontsize=6, markerscale=0.7)
+                # CHANGED: place legend outside plot area to avoid occluding points
+                handles, labels_for_legend = ax.get_legend_handles_labels()  # NEW
+                if handles:  # NEW
+                    ax.legend(  # CHANGED
+                        handles,
+                        labels_for_legend,
+                        loc="center left",
+                        bbox_to_anchor=(1.02, 0.5),
+                        fontsize=6,
+                        markerscale=0.7,
+                        borderaxespad=0.0,
+                    )
 
                 fname = f"cluster_plot_{title_tag}_{timestamp}.png" if timestamp else f"cluster_plot_{title_tag}.png"
                 plot_path = Path(output_dir) / fname
-                fig.tight_layout()
+                fig.tight_layout(rect=[0, 0, 0.8, 1])  # CHANGED: leave space for legend
                 fig.savefig(plot_path, dpi=150)
                 plt.close(fig)
 
