@@ -493,7 +493,7 @@ def run_full_pipeline(
             # 6) 진단 저장
             evaluate_clusters(
                 labels_raw.copy(), coords, raw_embeddings=embeddings,
-                output_dir=out_dir, timestamp=timestamp,
+                output_dir=out_dir, timestamp=timestamp, tag=pol,  # NEW: tag for plot filename
             )
 
             # 7) 대표 문장

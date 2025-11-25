@@ -7,6 +7,24 @@ import numpy as np
 import json
 import config
 
+# NEW: 기본 불용어 목록 (클러스터 라벨용)
+DEFAULT_STOPWORDS_KO = [  # CHANGED: 대표어 품질 개선
+    "맛있다",
+    "맛없다",
+    "괜찮다",
+    "좋다",
+    "나쁘다",
+    "많다",
+    "적다",
+    "없다",
+    "있다",
+    "똑같다",
+    "같다",
+    "심하다",
+    "괜히",
+    "그냥",
+]
+
 # facet 컬럼 후보 (우선순위)
 BUCKET_COL_CANDIDATES = ["facet_bucket", "facet_top1", "facet", "bucket", "facet_topk"]
 
@@ -75,20 +93,26 @@ def _materialize_bucket(df: pd.DataFrame) -> pd.Series:
 # ---------------------------------------------------------------------
 # NEW: facet/keyword 기반 대표어 라벨 생성 헬퍼
 def _build_keyword_label(kw: Optional[Dict[int, List[str]]]) -> Dict[int, str]:
+    """클러스터별 키워드 라벨 생성 (불용어 필터 + 상위 N개 제한)."""
     if not kw:
         return {}
 
     topk = getattr(config, "CLUSTER_NAME_TOPK", 2)
+    stopwords = getattr(config, "CLUSTER_NAME_STOPWORDS_KO", DEFAULT_STOPWORDS_KO)
     labels: Dict[int, str] = {}
+
     for k, v in kw.items():
         try:
             cid = int(k)
         except Exception:
             continue
 
+        # 리스트/튜플 형태의 키워드만 필터링 + topk 적용
         if isinstance(v, (list, tuple)):
-            pieces = [str(x).strip() for x in v[:topk] if str(x).strip()]
-            label = "·".join(pieces)
+            cleaned = [str(x).strip() for x in v if str(x).strip()]
+            filtered = [token for token in cleaned if token not in stopwords]
+            chosen = (filtered if filtered else cleaned)[:topk]
+            label = "·".join(chosen)
         else:
             label = str(v).strip()
 
@@ -218,12 +242,24 @@ def _build_rep_summary_table(
     base["대표 문장"] = rep_full_texts  # NEW: 전체 대표 문장 예시
 
     out = base[["감정", "분류", "대표어", "개수", "대표 문장"]].copy()
-    # 정렬: 감정(neg/neu/pos) → 분류 → 개수 desc
+    # CHANGED: 분류 공백은 표시/정렬용으로 빈 문자열 처리
+    def _clean_facet(val: object) -> str:
+        s = "" if val is None else str(val).strip()
+        return "" if s.lower() in {"none", "nan"} else s
+
+    out["분류"] = out["분류"].apply(_clean_facet)
+
+    # 정렬: 감정(neg/neu/pos) → 분류(미분류 맨 아래) → 개수 desc
     order_pol = {"negative": 0, "neutral": 1, "positive": 2}
     out["_p"] = out["감정"].map(order_pol).fillna(99)
+
+    non_blank_facets = sorted([f for f in out["분류"].unique() if f])
+    facet_categories = non_blank_facets + [""]  # 미분류("")를 항상 마지막에
+    out["_facet_cat"] = pd.Categorical(out["분류"], categories=facet_categories, ordered=True)
+
     out = (
-        out.sort_values(by=["_p", "분류", "개수"], ascending=[True, True, False])
-           .drop(columns=["_p"])
+        out.sort_values(by=["_p", "_facet_cat", "개수"], ascending=[True, True, False])
+           .drop(columns=["_p", "_facet_cat"])
            .reset_index(drop=True)
     )
     return out
@@ -296,6 +332,66 @@ def _build_year_ratio(raw_df: pd.DataFrame) -> pd.DataFrame:
     out["비율(%)"] = (out["리뷰 수"] / total * 100).round(1)
     return out
 
+# NEW: unify report sheet builder
+def _build_unified_report_sheet(
+    rep_tbl: pd.DataFrame,
+    plat_tbl: pd.DataFrame,
+    year_tbl: pd.DataFrame,
+    raw_df: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """
+    rep_tbl / plat_tbl / year_tbl을 이어붙여 단일 시트(report)용 DataFrame을 만든다.
+    - 헤더/타이틀/섹션 라벨까지 포함.
+    - to_excel(header=False)로 쓸 예정이므로 첫 행부터 실제 데이터가 들어간다고 가정한다.
+    """
+
+    rows: List[List[object]] = []
+
+    product_name = ""
+    product_col = getattr(config, "PRODUCT_NAME_COL", None)
+    if product_col and raw_df is not None and product_col in raw_df.columns:
+        try:
+            mode_series = raw_df[product_col].dropna()
+            if not mode_series.empty:
+                product_name = mode_series.mode().iloc[0]
+        except Exception:
+            product_name = ""
+
+    # 타이틀 블록
+    rows.append(["크롤링 리포트"])
+    rows.append(["품목명", product_name])
+    rows.append(["회차"])
+    rows.append([])
+
+    # 인사이트 블록
+    rows.append(["Insights", "(비워두기)"])
+    rows.append([])
+    rows.append([])
+
+    # 데이터 수량 블록
+    rows.append(["데이터 수량"])
+    rows.append(plat_tbl.columns.tolist())
+    for _, row in plat_tbl.iterrows():
+        rows.append(list(row))
+
+    # 연도별 비율 블록
+    if not year_tbl.empty:
+        rows.append([])
+        rows.append(["데이터 연도별 비율"])
+        rows.append(year_tbl.columns.tolist())
+        for _, row in year_tbl.iterrows():
+            rows.append(list(row))
+
+    # 클러스터 요약 블록
+    if not rep_tbl.empty:
+        rows.append([])
+        rows.append(["클러스터 요약"])
+        rows.append(rep_tbl.columns.tolist())
+        for _, row in rep_tbl.iterrows():
+            rows.append(list(row))
+
+    return pd.DataFrame(rows)
+
 # ---------------------------------------------------------------------
 # PUBLIC: 저장 함수
 # ---------------------------------------------------------------------
@@ -311,6 +407,7 @@ def save_client_report(
     - Sheet1: 대표어 요약 (감정/분류/대표어/개수/대표 문장)
     - Sheet2: 데이터 수량 (플랫폼별 수집·분석 수 + 긍/중/부 비율)
     - Sheet3: 연도별 리뷰 비율 (원본 리뷰 기준)
+    - NEW: report 시트(단일 페이지 레이아웃)
     """
     if output_path is None:
         raise ValueError("output_path is required for save_client_report")
@@ -331,7 +428,12 @@ def save_client_report(
     plat_tbl = _build_platform_block(clause_w_meta, raw_df)
     year_tbl = _build_year_ratio(raw_df)
 
+    # NEW: unified report sheet
+    unified = _build_unified_report_sheet(rep_tbl, plat_tbl, year_tbl, raw_df)
+
     with pd.ExcelWriter(output_path, engine="openpyxl") as w:
+        # CHANGED: add unified sheet combining summary blocks
+        unified.to_excel(w, sheet_name="report", index=False, header=False)
         rep_tbl.to_excel(w, sheet_name="대표어요약", index=False)
         plat_tbl.to_excel(w, sheet_name="데이터수량", index=False)
         year_tbl.to_excel(w, sheet_name="연도별비율", index=False)

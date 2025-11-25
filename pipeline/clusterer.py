@@ -7,6 +7,11 @@ import pandas as pd
 import config
 
 from sklearn.metrics import silhouette_score
+# NEW: optional matplotlib import for visualization
+try:
+    import matplotlib.pyplot as plt
+except ImportError:
+    plt = None
 
 try:
     import hdbscan
@@ -86,12 +91,14 @@ def evaluate_clusters(
     logger: logging.Logger | None = None,
     output_dir: Path | None = None,
     timestamp: str | None = None,
+    tag: str | None = None,   # NEW: identifier for file names (e.g., polarity)
 ) -> None:
     """
     클러스터 분포와 실루엣 점수를 안전하게 기록/저장합니다.
     - 라벨에 int와 str('other')가 섞여 있어도 동작
     - 실루엣 계산은 유효 라벨이 2개 이상일 때만 수행
     - 분포/통계 CSV 저장
+    - (옵션) 시각화 저장
     """
     lg = logger or logging.getLogger(__name__)
 
@@ -163,4 +170,47 @@ def evaluate_clusters(
             lg.info("🔍 Silhouette: insufficient non-noise points (<2)")
         else:
             lg.info("🔍 Silhouette: only one valid label (need ≥2 distinct labels)")
+
+    # NEW: 3) 시각화 저장 (조건 충족 시)
+    if output_dir is not None and embeddings_2d is not None and getattr(embeddings_2d, "ndim", 0) == 2 and embeddings_2d.shape[1] >= 2:
+        if plt is None:
+            lg.info("📉 matplotlib not available; skip cluster plot")
+        else:
+            try:
+                x = embeddings_2d[:, 0]
+                y = embeddings_2d[:, 1]
+                labels_str_full = np.array([str(x) for x in np.asarray(labels, dtype=object)])
+                noise_label = str(getattr(config, "OUTLIER_LABEL", "-1"))
+                unique_labels = sorted(set(labels_str_full))
+
+                fig, ax = plt.subplots(figsize=(6, 4))
+                for lab in unique_labels:
+                    mask = labels_str_full == lab
+                    if not mask.any():
+                        continue
+                    if lab == noise_label:
+                        ax.scatter(x[mask], y[mask], s=5, alpha=0.3, color="lightgray", label="noise")
+                    else:
+                        ax.scatter(x[mask], y[mask], s=8, alpha=0.7, label=f"cluster {lab}")
+
+                ax.set_xlabel("UMAP-1")
+                ax.set_ylabel("UMAP-2")
+                title_tag = tag if tag is not None else "all"
+                if timestamp:
+                    ax.set_title(f"Clusters ({title_tag}, {timestamp})")
+                else:
+                    ax.set_title(f"Clusters ({title_tag})")
+                ax.legend(loc="best", fontsize=6, markerscale=0.7)
+
+                fname = f"cluster_plot_{title_tag}_{timestamp}.png" if timestamp else f"cluster_plot_{title_tag}.png"
+                plot_path = Path(output_dir) / fname
+                fig.tight_layout()
+                fig.savefig(plot_path, dpi=150)
+                plt.close(fig)
+
+                lg.info("💾 Cluster plot saved → %s", plot_path)
+            except Exception:
+                lg.exception("⚠️ failed to save cluster visualization")
+    else:
+        lg.info("📉 Skip cluster plot (missing output_dir or insufficient 2D coords)")
 

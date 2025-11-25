@@ -202,6 +202,7 @@ categories:
         - 알이 작다
         - 양이 적다
         - 작다
+        - 작아요
         - 중량 부족
         - 크기 제각각
       taste:
@@ -351,6 +352,8 @@ categories:
         - 탁하다
         - 핏물
         - 해동
+        - 살아서 오지 않
+        - 죽어서 왔
       packaging_delivery:
         label_ko: 패키지/배송
         description_ko: 포장 상태, 냉매, 배송 속도
@@ -412,6 +415,7 @@ categories:
         - 손질이 번거롭다
         - 손질이 불량하다
         - 손질이 안 되어 있다
+        - 닦이지 않
       price:
         label_ko: 가격
         description_ko: 가격 대비 만족도
@@ -441,6 +445,7 @@ categories:
         - 비싸요
         - 비싼 편
         - 비쌌다
+        - 비싸긴 
         - 비용
       size_weight:
         label_ko: 크기/중량
@@ -453,11 +458,11 @@ categories:
         negative_keywords:
         - 빈약하다
         - 사이즈가 작
-        - 사이즈가 작다
         - 사이즈는 작
         - 살이 적다
         - 양이 적다
         - 작다
+        - 작아요
         - 작았지만
         - 크기가 작
         - 특대라고 했는데
@@ -644,6 +649,7 @@ categories:
         negative_keywords:
         - 빈약하다
         - 양이 적다
+        - 작아요
         - 작다
         - 크기 제각각
       taste:
@@ -897,6 +903,7 @@ categories:
         - 생각보다 적다
         - 얇다
         - 양이 적다
+        - 작아요
         - 작다
         - 크기가 작
         - 크기가 크
