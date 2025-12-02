@@ -26,6 +26,19 @@ CATEGORY_OVERRIDES: Dict[str, str] = {}
 
 DEFAULT_CATEGORY = "generic"
 
+# 플랫폼 순서 (클라이언트 요구사항)
+PLATFORM_ORDER_SHOPPING = ["제타", "SSG", "네이버 스마트스토어", "지마켓", "컬리"]
+PLATFORM_ORDER_COMMUNITY = [
+    "인스티즈",
+    "엠엘비파크",
+    "뽐뿌",
+    "루리웹",
+    "네이트판",
+    "82쿡",
+    "네이버 블로그",
+]
+PLATFORM_ORDER = PLATFORM_ORDER_SHOPPING + PLATFORM_ORDER_COMMUNITY
+
 
 def infer_category(dataset_path: Union[str, Path], sku: Optional[str] = None) -> str:
     """Infer category from dataset path or explicit overrides.

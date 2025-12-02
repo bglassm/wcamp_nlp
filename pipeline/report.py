@@ -282,19 +282,39 @@ def _build_platform_block(clause_df_with_meta: pd.DataFrame, raw_df: pd.DataFram
         ana_counts = pd.Series(dtype=int)
     analyzed = ana_counts.to_dict()
 
-    # (3) 플랫폼별 감정 비율 (절 기준)
-    pol_ratio = {}
+    # (3) 플랫폼별 감정 비율 및 개수 (절 기준)
+    pol_ratio: Dict[str, Dict[str, float]] = {}
+    pol_counts: Dict[str, Dict[str, int]] = {}
+    grp = pd.DataFrame()
     if {"platform", "polarity"} <= set(clause_df_with_meta.columns):
         grp = clause_df_with_meta.groupby(["platform", "polarity"]).size().unstack(fill_value=0)
         ratio_df = (grp.T / grp.sum(axis=1).replace(0, np.nan)).T.fillna(0.0)
-        pol_ratio = {plat: {pol: float(ratio_df.loc[plat].get(pol, 0.0)) for pol in ["positive", "neutral", "negative"]}
-                     for plat in ratio_df.index}
+        pol_ratio = {
+            plat: {pol: float(ratio_df.loc[plat].get(pol, 0.0)) for pol in ["positive", "neutral", "negative"]}
+            for plat in ratio_df.index
+        }
+        pol_counts = {
+            plat: {pol: int(grp.loc[plat].get(pol, 0)) for pol in ["positive", "neutral", "negative"]}
+            for plat in grp.index
+        }
 
-    platforms = sorted(set(list(collected.keys()) + list(analyzed.keys()) + list(pol_ratio.keys())))
+    raw_platforms = set(list(collected.keys()) + list(analyzed.keys()) + list(pol_ratio.keys()) + list(pol_counts.keys()))
+    preferred = getattr(config, "PLATFORM_ORDER", [])
+    ordered = [p for p in preferred if p in raw_platforms]
+    rest = sorted(p for p in raw_platforms if p not in preferred)
+    platforms = ordered + rest
     cols = ["전체"] + platforms
 
     def _row_from(d: dict) -> List[int]:
         return [sum(d.values())] + [int(d.get(p, 0)) for p in platforms]
+
+    def _count_row(which: str) -> List[int]:
+        if {"platform", "polarity"} <= set(clause_df_with_meta.columns):
+            overall = int((clause_df_with_meta["polarity"] == which).sum())
+        else:
+            overall = 0
+        row = [int(pol_counts.get(p, {}).get(which, 0)) for p in platforms]
+        return [overall] + row
 
     def _ratio_row(which: str) -> List[float]:
         row = [pol_ratio.get(p, {}).get(which, 0.0) for p in platforms]
@@ -307,6 +327,9 @@ def _build_platform_block(clause_df_with_meta: pd.DataFrame, raw_df: pd.DataFram
     data = {
         "수집된 데이터 수": _row_from(collected),
         "분석된 데이터 수": _row_from(analyzed),
+        "긍정 개수":        _count_row("positive"),
+        "중립 개수":        _count_row("neutral"),
+        "부정 개수":        _count_row("negative"),
         "긍정 비율 (%)":     [v * 100 for v in _ratio_row("positive")],
         "중립 비율 (%)":     [v * 100 for v in _ratio_row("neutral")],
         "부정 비율 (%)":     [v * 100 for v in _ratio_row("negative")],
@@ -321,16 +344,21 @@ def _build_platform_block(clause_df_with_meta: pd.DataFrame, raw_df: pd.DataFram
 # ---------------------------------------------------------------------
 def _build_year_ratio(raw_df: pd.DataFrame) -> pd.DataFrame:
     if "date" not in raw_df.columns:
-        return pd.DataFrame(columns=["연도", "리뷰 수", "비율(%)"])
+        return pd.DataFrame(columns=["메트릭"])
     dt = pd.to_datetime(raw_df["date"], errors="coerce")
     y = dt.dt.year.dropna()
     if y.empty:
-        return pd.DataFrame(columns=["연도", "리뷰 수", "비율(%)"])
+        return pd.DataFrame(columns=["메트릭"])
     year_cnt = y.value_counts().sort_index()
     total = int(year_cnt.sum())
-    out = pd.DataFrame({"연도": year_cnt.index.astype(int), "리뷰 수": year_cnt.values})
-    out["비율(%)"] = (out["리뷰 수"] / total * 100).round(1)
-    return out
+    years = year_cnt.index.astype(int).tolist()
+    counts = year_cnt.values.tolist()
+    ratios = (year_cnt / total * 100).round(1).tolist()
+    data = [
+        ["리뷰 수", *counts],
+        ["비율(%)", *ratios],
+    ]
+    return pd.DataFrame(data, columns=["메트릭"] + years)
 
 # NEW: unify report sheet builder
 def _build_unified_report_sheet(
