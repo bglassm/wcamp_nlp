@@ -138,6 +138,22 @@ def _load_facets_forgiving(facets_path: Path, facet_embedder):
         - list schema: [{"id":..,"name":..,"desc":..}, ...] or {"buckets":[...]}
         - dict schema: {"facets": {"freshness": {"description": "...", "keywords":[...]}, ...}}
         """
+
+        def _normalize_keywords(raw):
+            if isinstance(raw, str):
+                raw = [raw]
+            if not isinstance(raw, (list, tuple)):
+                return []
+            out = []
+            for kw in raw:
+                try:
+                    s = str(kw).strip()
+                except Exception:
+                    continue
+                if s:
+                    out.append(s)
+            return out
+
         # case 1: already a list
         if isinstance(obj, list):
             return obj
@@ -153,22 +169,25 @@ def _load_facets_forgiving(facets_path: Path, facet_embedder):
                     node = node or {}
                     # desc: desc > description > keywords → fallback
                     desc = None
+                    kw_list = _normalize_keywords(node.get("keywords"))
                     for k in ("desc", "description"):
                         v = node.get(k)
                         if v and str(v).strip():
                             desc = str(v).strip()
                             break
                     if not desc:
-                        kws = node.get("keywords") or []
-                        if isinstance(kws, (list, tuple)) and kws:
-                            desc = f"{name} 관련 표현: " + " ".join(map(str, kws))
+                        if kw_list:
+                            desc = f"{name} 관련 표현: " + " ".join(map(str, kw_list))
                         else:
                             desc = f"{name}이/가 좋다 나쁘다 만족 불만"
-                    buckets.append({
+                    bucket = {
                         "id": str(name).lower().replace(" ", ""),
                         "name": str(name),
                         "desc": desc
-                    })
+                    }
+                    if kw_list:
+                        bucket["keywords"] = kw_list
+                    buckets.append(bucket)
                 return buckets
         # fallback
         raise RuntimeError(f"Unsupported facets YAML schema: {type(obj).__name__}")

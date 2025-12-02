@@ -11,10 +11,13 @@ from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional, Any
 
 import logging
+import math
+import json
 import numpy as np
 import pandas as pd
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
+import config
 
 try:
     import yaml  # pyyaml
@@ -24,6 +27,8 @@ except Exception:  # pragma: no cover
 from pathlib import Path
 import io
 import os
+
+from pipeline.text_utils import tokenize_lemmas
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +53,7 @@ class Facet:
     name: str
     desc: str
     emb: np.ndarray  # normalized vector
+    keywords: List[str] | None = None
 
 
 # ---------------------------------------------------------------------
@@ -150,11 +156,28 @@ def load_facets_yml(path: str | Path, facet_embedder, *args, **kwargs) -> List[F
     names: List[str] = []
     ids: List[str] = []
     descs: List[str] = []
+    keywords_all: List[List[str]] = []
     skipped = 0
+
+    def _normalize_keywords_field(raw: Any) -> List[str]:
+        if isinstance(raw, str):
+            raw = [raw]
+        if not isinstance(raw, (list, tuple)):
+            return []
+        out: List[str] = []
+        for kw in raw:
+            try:
+                s = str(kw).strip()
+            except Exception:
+                continue
+            if s:
+                out.append(s)
+        return out
 
     for i, it in enumerate(items):
         name = str(it.get("name") or it.get("id") or f"F{i}")
         fid = str(it.get("id") or name).lower().replace(" ", "_")
+        keywords = _normalize_keywords_field(it.get("keywords"))
         # desc priority: desc > description > keywords(list) > fallback skip
         desc = it.get("desc") or it.get("description")
         if not desc:
@@ -170,6 +193,7 @@ def load_facets_yml(path: str | Path, facet_embedder, *args, **kwargs) -> List[F
         names.append(name)
         ids.append(fid)
         descs.append(desc)
+        keywords_all.append(keywords)
 
     if not names:
         logger.error("[FACETS] all items were empty after normalization (skipped=%d) in %s", skipped, os.path.abspath(path))
@@ -192,7 +216,10 @@ def load_facets_yml(path: str | Path, facet_embedder, *args, **kwargs) -> List[F
         logger.exception("[FACETS] embedding failed: %s", e)
         return None
 
-    facets: List[Facet] = [Facet(id=ids[i], name=names[i], desc=descs[i], emb=vecs[i]) for i in range(len(names))]
+    facets: List[Facet] = [
+        Facet(id=ids[i], name=names[i], desc=descs[i], emb=vecs[i], keywords=keywords_all[i])
+        for i in range(len(names))
+    ]
     logger.info(
         "[FACETS] loaded=%d usable (skipped=%d) | emb.shape=(%d,%d) | head=%s",
         len(facets),
@@ -425,28 +452,74 @@ def route_to_facets(
     *,
     top_k: int = 2,
     score_threshold: float = 0.32,
-) -> Tuple[List[Optional[str]], List[List[Tuple[str, float]]]]:
+    clause_texts: Optional[List[str]] = None,
+    keyword_bonus_lambda: Optional[float] = None,
+) -> Tuple[
+    List[Optional[str]],
+    List[List[Tuple[str, float]]],
+    List[Optional[float]],
+    List[Dict[str, List[str]]],
+]:
     """
-    Compute cosine similarity (dot on normalized vectors) between each clause and facet.
+    Compute cosine similarity (dot on normalized vectors) between each clause and facet
+    and optionally add a lemma-based keyword bonus.
     Returns:
-      top1 list of facet ids (or None) and topk list of (facet_id, score).
+      - top1 list of facet ids (or None)
+      - topk list of (facet_id, score)
+      - top1_scores list aligned to ``top1``
+      - keyword_hits per clause: facet_id -> matched keyword tokens
     """
     if not facets:
-        return [None] * len(clause_embs), [[] for _ in range(len(clause_embs))]
+        empty = [[] for _ in range(len(clause_embs))]
+        return [None] * len(clause_embs), empty, [None] * len(clause_embs), [dict() for _ in range(len(clause_embs))]
     F = np.stack([f.emb for f in facets], axis=0)  # (F, D), already normalized
     X = _normalize_rows(clause_embs)               # (N, D)
     sims = X @ F.T                                 # (N, F)
 
+    # Lexical bonus via lemma-based keyword hits
+    scores = np.array(sims, copy=True)
+    lam = keyword_bonus_lambda
+    if lam is None:
+        lam = float(getattr(config, "FACET_KEYWORD_BONUS_LAMBDA", 0.0))
+
+    keyword_hits: List[Dict[str, List[str]]] = [dict() for _ in range(len(X))]
+    clause_tokens: Optional[List[set[str]]] = None
+    facet_keyword_sets: Optional[List[set[str]]] = None
+
+    if clause_texts is not None and len(clause_texts) == len(X):
+        clause_tokens = [set(tokenize_lemmas(txt)) for txt in clause_texts]
+        facet_keyword_sets = []
+        for facet in facets:
+            tokens: List[str] = []
+            for kw in facet.keywords or []:
+                tokens.extend(tokenize_lemmas(str(kw)))
+            facet_keyword_sets.append(set(tokens))
+
+    if clause_tokens is not None and facet_keyword_sets is not None and any(facet_keyword_sets):
+        for i, tokens in enumerate(clause_tokens):
+            if not tokens:
+                continue
+            for j, facet_kws in enumerate(facet_keyword_sets):
+                if not facet_kws:
+                    continue
+                matched_tokens = list(tokens & facet_kws)
+                if not matched_tokens:
+                    continue
+                keyword_hits[i][facets[j].id] = sorted(matched_tokens)
+                if lam > 0:
+                    scores[i, j] += lam * math.log1p(len(matched_tokens))
+
     k = max(1, min(top_k, sims.shape[1]))
     # partial top-k then stable sort
-    idx_part = np.argpartition(-sims, kth=k - 1, axis=1)[:, :k]
-    sims_part = np.take_along_axis(sims, idx_part, axis=1)
+    idx_part = np.argpartition(-scores, kth=k - 1, axis=1)[:, :k]
+    sims_part = np.take_along_axis(scores, idx_part, axis=1)
     order = np.argsort(-sims_part, axis=1)
     idx_sorted = np.take_along_axis(idx_part, order, axis=1)
     sims_sorted = np.take_along_axis(sims_part, order, axis=1)
 
     top1: List[Optional[str]] = []
     topk: List[List[Tuple[str, float]]] = []
+    top1_scores: List[Optional[float]] = []
 
     for i in range(sims.shape[0]):
         pairs: List[Tuple[str, float]] = []
@@ -456,8 +529,9 @@ def route_to_facets(
                 pairs.append((facets[idx_sorted[i, j]].id, score))
         topk.append(pairs)
         top1.append(pairs[0][0] if pairs else None)
+        top1_scores.append(pairs[0][1] if pairs else None)
 
-    return top1, topk
+    return top1, topk, top1_scores, keyword_hits
 
 
 def apply_facet_routing(
@@ -503,14 +577,40 @@ def apply_facet_routing(
     clause_embs = _normalize_rows(np.asarray(clause_embs, dtype=np.float32))
 
     # compute routing
-    top1_vals, topk_vals = route_to_facets(
-        clause_embs, facets, top_k=top_k, score_threshold=float(threshold)
+    clause_texts = df[text_column].astype(str).tolist()
+    top1_vals, topk_vals, top1_scores, keyword_hits = route_to_facets(
+        clause_embs,
+        facets,
+        top_k=top_k,
+        score_threshold=float(threshold),
+        clause_texts=clause_texts,
     )
 
     top1_series = pd.Series([v if v else None for v in top1_vals], index=df.index, dtype=object)
+    top1_score_series = pd.Series(
+        [float(v) if v is not None else None for v in top1_scores],
+        index=df.index,
+        dtype=object,
+    )
     # store as simple str to keep xlsx friendly and avoid quoting issues
     topk_series = pd.Series(
-        [str(pairs) if pairs else None for pairs in topk_vals],
+        [
+            json.dumps([[fid, score] for fid, score in pairs], ensure_ascii=False)
+            if pairs
+            else None
+            for pairs in topk_vals
+        ],
+        index=df.index,
+        dtype=object,
+    )
+
+    rule_hits_series = pd.Series(
+        [
+            json.dumps(keyword_hits[i].get(top1_vals[i], []) or [], ensure_ascii=False)
+            if keyword_hits
+            else "[]"
+            for i in range(len(top1_vals))
+        ],
         index=df.index,
         dtype=object,
     )
@@ -545,6 +645,14 @@ def apply_facet_routing(
     else:
         out["facet_top1"] = top1_series
 
+    # facet_top1_score
+    if "facet_top1_score" in out.columns:
+        exists = out["facet_top1_score"]
+        needs = exists.isna() | exists.astype(str).str.strip().isin(["", "nan", "none", "None"])
+        out.loc[needs, "facet_top1_score"] = top1_score_series.loc[needs]
+    else:
+        out["facet_top1_score"] = top1_score_series
+
     # facet_topk
     if "facet_topk" in out.columns:
         exists = out["facet_topk"]
@@ -553,12 +661,26 @@ def apply_facet_routing(
     else:
         out["facet_topk"] = topk_series
 
+    # facet_rule_hits
+    if "facet_rule_hits" in out.columns:
+        exists = out["facet_rule_hits"]
+        needs = exists.isna() | exists.astype(str).str.strip().isin(["", "nan", "none", "None", "[]", "{}"])
+        out.loc[needs, "facet_rule_hits"] = rule_hits_series.loc[needs]
+    else:
+        out["facet_rule_hits"] = rule_hits_series
+
     # clean blanks to NaN
     mask_blank1 = out["facet_top1"].astype(str).str.strip().isin(["", "nan", "none", "None"])
     out.loc[mask_blank1, "facet_top1"] = None
     if "facet_topk" in out.columns:
         mask_blankk = out["facet_topk"].astype(str).str.strip().isin(["", "nan", "none", "None"])
         out.loc[mask_blankk, "facet_topk"] = None
+    if "facet_top1_score" in out.columns:
+        mask_blank_score = out["facet_top1_score"].astype(str).str.strip().isin(["", "nan", "none", "None"])
+        out.loc[mask_blank_score, "facet_top1_score"] = None
+    if "facet_rule_hits" in out.columns:
+        mask_blank_hits = out["facet_rule_hits"].astype(str).str.strip().isin(["", "nan", "none", "None"])
+        out.loc[mask_blank_hits, "facet_rule_hits"] = "[]"
 
     # ---------------------------------------------------------------
     # Category-aware keyword facet assignment (non-destructive)
@@ -762,11 +884,28 @@ def refine_clusters(
     clause_embs = _normalize_rows(np.asarray(clause_embs, dtype=np.float32))
 
     # facet routing into new columns, preserving existing annotations
-    top1_vals, topk_vals = route_to_facets(
-        clause_embs, facets, top_k=top_k_facets, score_threshold=facet_threshold
+    clause_texts = df["clause"].astype(str).tolist() if "clause" in df.columns else None
+    top1_vals, topk_vals, top1_scores, keyword_hits = route_to_facets(
+        clause_embs,
+        facets,
+        top_k=top_k_facets,
+        score_threshold=facet_threshold,
+        clause_texts=clause_texts,
     )
     top1_series = pd.Series([v if v else None for v in top1_vals], index=df.index, dtype=object)
-    topk_series = pd.Series([str(p) if p else None for p in topk_vals], index=df.index, dtype=object)
+    top1_score_series = pd.Series(
+        [float(v) if v is not None else None for v in top1_scores], index=df.index, dtype=object
+    )
+    topk_series = pd.Series(
+        [json.dumps([[fid, score] for fid, score in pairs], ensure_ascii=False) if pairs else None for pairs in topk_vals],
+        index=df.index,
+        dtype=object,
+    )
+    rule_hits_series = pd.Series(
+        [json.dumps(keyword_hits[i].get(top1_vals[i], []) or [], ensure_ascii=False) for i in range(len(top1_vals))],
+        index=df.index,
+        dtype=object,
+    )
 
     if "facet_top1" in df.columns:
         needs = df["facet_top1"].isna() | df["facet_top1"].astype(str).str.strip().isin(["", "nan", "none", "None"])
@@ -780,11 +919,27 @@ def refine_clusters(
     else:
         df["facet_topk"] = topk_series
 
+    if "facet_top1_score" in df.columns:
+        needs = df["facet_top1_score"].isna() | df["facet_top1_score"].astype(str).str.strip().isin(["", "nan", "none", "None"])
+        df.loc[needs, "facet_top1_score"] = top1_score_series.loc[needs]
+    else:
+        df["facet_top1_score"] = top1_score_series
+
+    if "facet_rule_hits" in df.columns:
+        needs = df["facet_rule_hits"].isna() | df["facet_rule_hits"].astype(str).str.strip().isin(["", "nan", "none", "None", "[]", "{}"])
+        df.loc[needs, "facet_rule_hits"] = rule_hits_series.loc[needs]
+    else:
+        df["facet_rule_hits"] = rule_hits_series
+
     # clean blanks
     blank1 = df["facet_top1"].astype(str).str.strip().isin(["", "nan", "none", "None"])
     df.loc[blank1, "facet_top1"] = None
     blankk = df["facet_topk"].astype(str).str.strip().isin(["", "nan", "none", "None"])
     df.loc[blankk, "facet_topk"] = None
+    blanks = df["facet_top1_score"].astype(str).str.strip().isin(["", "nan", "none", "None"])
+    df.loc[blanks, "facet_top1_score"] = None
+    blank_hits = df["facet_rule_hits"].astype(str).str.strip().isin(["", "nan", "none", "None"])
+    df.loc[blank_hits, "facet_rule_hits"] = "[]"
 
     # default refined_label = original cluster_label
     df["refined_label"] = df["cluster_label"].values

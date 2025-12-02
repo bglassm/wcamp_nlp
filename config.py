@@ -218,6 +218,7 @@ KEYWORD_CANDIDATE_MULTIPLIER = 2    # KeyBERT 후보 배수
 KEYWORD_MMR_DIVERSITY = 0.5         # KeyBERT MMR diversity 기본값
 KEYWORD_MAX_PER_CLUSTER = 10        # 각 클러스터에서 최종 키워드 수 기본값
 USE_KEYBERT = False                 # True: KeyBERT, False: c-TF-IDF
+KEYWORD_EXTRA_STOPWORDS: list[str] = []  # 품목명/브랜드명을 추가해 대표 키워드에서 제외할 수 있는 리스트
 GLOBAL_COMMON_TERMS_MAX_CLUSTER_RATIO = 0.4
 
 
@@ -274,6 +275,8 @@ REFINEMENT_FACETS_PATH        = "rules/facets.yml"
 REFINEMENT_THRESHOLDS_PATH    = "rules/thresholds.yml"
 # refined_cluster_id 네임스페이스(neg/neu/pos = 0/1/2)
 REFINEMENT_STABLE_ID          = {"negative": 0, "neutral": 1, "positive": 2}
+# Facet keyword bonus weight (cosine base + λ * log(1 + hits))
+FACET_KEYWORD_BONUS_LAMBDA    = 0.1
 
 # ---- Smart clause split knobs ----
 SMART_SPLIT_ENABLED = True                 # 끄고 싶으면 False

@@ -21,7 +21,8 @@ kiwi = Kiwi()
 
 # Internal KeyBERT cache
 _kw_models: Dict[str, KeyBERT] = {}
-STOPWORD_SET = set(getattr(config, "KOREAN_STOPWORDS", []))
+EXTRA_STOPWORDS = {w.strip() for w in getattr(config, "KEYWORD_EXTRA_STOPWORDS", []) if w}
+STOPWORD_SET = set(getattr(config, "KOREAN_STOPWORDS", [])) | EXTRA_STOPWORDS
 ALLOWED_POS_TAGS = set(getattr(config, "ALLOWED_POS_TAGS_KO", set()))
 
 
@@ -110,8 +111,15 @@ def _sample_and_normalize(sents: List[str]) -> str:
         random.seed(config.RANDOM_SEED if hasattr(config, 'RANDOM_SEED') else 0)
         docs = random.sample(docs, config.MAX_KEYWORD_DOCS)
     tokens: List[str] = []
+    weighted_tags = {"VA", "VV"}
     for sent in docs:
-        tokens.extend(_tokenize_sentence(sent, stopwords=STOPWORD_SET))
+        for tok in kiwi.tokenize(sent or ""):
+            normalized = normalize_keyword_token(tok, stopwords=STOPWORD_SET)
+            if not normalized:
+                continue
+
+            weight = 2 if getattr(tok, "tag", "")[:2] in weighted_tags else 1
+            tokens.extend([normalized] * weight)
     return " ".join(tokens)
 
 

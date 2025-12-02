@@ -41,7 +41,9 @@ def _ordered_clause_columns(df: pd.DataFrame) -> List[str]:
         "refined_cluster_id",
         "stable_cluster_id",
         "facet_top1",
+        "facet_top1_score",
         "facet_topk",
+        "facet_rule_hits",
     ]
     cols = list(df.columns)
     ordered = [c for c in preferred if c in cols] + [c for c in cols if c not in preferred]
@@ -199,7 +201,7 @@ def save_clustered_clauses(
         # 1) clauses 시트: 표준 컬럼 순서 + JSON 문자열 보정
         clause_out = clause_df.copy()
         # 리스트/딕셔너리류는 JSON 문자열로 표시
-        for col in ("facet_topk", "facet_scores", "representatives"):
+        for col in ("facet_topk", "facet_rule_hits", "facet_scores", "representatives"):
             if col in clause_out.columns:
                 clause_out[col] = clause_out[col].apply(
                     lambda v: json.dumps(v, ensure_ascii=False)

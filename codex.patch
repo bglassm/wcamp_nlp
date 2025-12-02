@@ -1,0 +1,1255 @@
+diff --git a/config.py b/config.py
+index 6b6c11bc057d4558ac23e2f76ff17fa935b1ff37..d07ddfc837010f3f477378d1e756e878b538a593 100644
+--- a/config.py
++++ b/config.py
+@@ -196,50 +196,51 @@ HDBSCAN_METRIC           = "euclidean"
+ ENABLE_CLUSTER_MERGE     = True
+ CLUSTER_MERGE_THRESHOLD  = 0.93
+ MERGE_BATCH_SIZE         = 64
+ 
+ # 8. Sentiment analysis (절 필터링용 ABSA)
+ ENABLE_SENTIMENT_ANALYSIS = False  # 절 분할 후 ABSA 강제 적용 시 True로 변경
+ 
+ # 9. Keyword / naming
+ CLUSTER_NAME_TOPK = 3              # 클러스터 이름용 키워드 개수
+ KEYWORD_MAX_SENT  = 50             # 키워드 추출시 샘플 문장 수
+ KEYWORD_NGRAM_RANGE = (1, 1)
+ TOKEN_PATTERN = r"(?u)\b[가-힣]{2,}\b"
+ KOREAN_STOPWORDS_PATH = "data/stopwords_ko.txt"
+ KOREAN_STOPWORDS_CORE = [
+     "은", "는", "이", "가", "을", "를", "에", "도",
+     "너무", "정말", "그냥",
+ ]
+ ALLOWED_POS_TAGS_KO = {"NNG", "NNP", "NNB", "VA", "VV", "SL"}
+ JOSA_EOMI_TAGS = {"JKS", "JKB", "JKC", "JKG", "JKV", "JKQ", "JKO", "JX", "JC", "EP", "EF", "EC"}
+ VALID_KEYWORD_RE = r"^[가-힣A-Za-z]{1,10}$"
+ MAX_KEYWORD_DOCS = 50               # 샘플링 문장 수 제한
+ KEYWORD_CANDIDATE_MULTIPLIER = 2    # KeyBERT 후보 배수
+ KEYWORD_MMR_DIVERSITY = 0.5         # KeyBERT MMR diversity 기본값
+ KEYWORD_MAX_PER_CLUSTER = 10        # 각 클러스터에서 최종 키워드 수 기본값
+ USE_KEYBERT = False                 # True: KeyBERT, False: c-TF-IDF
++KEYWORD_EXTRA_STOPWORDS: list[str] = []  # 품목명/브랜드명을 추가해 대표 키워드에서 제외할 수 있는 리스트
+ GLOBAL_COMMON_TERMS_MAX_CLUSTER_RATIO = 0.4
+ 
+ 
+ def _load_external_stopwords(stopword_path: str) -> set:
+     """Load additional Korean stopwords from the given relative path.
+ 
+     Falls back to an empty set if the file does not exist or cannot be read.
+     """
+ 
+     resolved = Path(stopword_path)
+     if not resolved.is_absolute():
+         resolved = BASE_DIR / resolved
+ 
+     if not resolved.exists():
+         logger.warning("Stopword file not found: %s — using core list only", resolved)
+         return set()
+ 
+     try:
+         lines = resolved.read_text(encoding="utf-8").splitlines()
+         words = {ln.strip() for ln in lines if ln.strip()}
+         logger.info("Loaded %d external Korean stopwords from %s", len(words), resolved)
+         return words
+     except Exception as exc:  # pragma: no cover - defensive I/O guard
+         logger.warning("Failed to load external stopwords from %s (%s)", resolved, exc)
+         return set()
+@@ -252,50 +253,52 @@ def _initialize_korean_stopwords() -> list:
+     stopwords.update(_load_external_stopwords(KOREAN_STOPWORDS_PATH))
+     return sorted(stopwords)
+ 
+ 
+ KOREAN_STOPWORDS = _initialize_korean_stopwords()
+ 
+ # 10. Summarizer
+ MAX_REPRESENTATIVE_SENTENCES = 3           # 각 클러스터당 최종 대표 문장 수
+ TOP_K_REPRESENTATIVES = MAX_REPRESENTATIVE_SENTENCES  # backward compatibility
+ REPRESENTATIVE_CANDIDATE_MULTIPLIER = 10   # 후보 문장 수 multiplier
+ REPRESENTATIVE_MMR_LAMBDA = 0.7            # 중요도 vs 다양성 가중치 (0.7 = 중요도 70%)
+ REPRESENTATIVE_DUPLICATE_SIM_THRESHOLD = 0.95  # 이 이상 유사하면 중복으로 간주
+ 
+ # 11. Outlier & ABSA confidence handling
+ HANDLE_OUTLIERS           = True
+ OUTLIER_LABEL             = "other"
+ ABSA_CONFIDENCE_THRESHOLD = 0.6
+ 
+ # 12. Refinement layer (domain-agnostic)
+ # rules/facets.yml, rules/thresholds.yml 사용. main.py에서 getattr로 안전 로드.
+ REFINEMENT_ENABLED            = True
+ REFINEMENT_FACETS_PATH        = "rules/facets.yml"
+ REFINEMENT_THRESHOLDS_PATH    = "rules/thresholds.yml"
+ # refined_cluster_id 네임스페이스(neg/neu/pos = 0/1/2)
+ REFINEMENT_STABLE_ID          = {"negative": 0, "neutral": 1, "positive": 2}
++# Facet keyword bonus weight (cosine base + λ * log(1 + hits))
++FACET_KEYWORD_BONUS_LAMBDA    = 0.1
+ 
+ # ---- Smart clause split knobs ----
+ SMART_SPLIT_ENABLED = True                 # 끄고 싶으면 False
+ SMART_SPLIT_USE_EMBEDDING = True           # 임베딩 거리 사용 (SBERT lazy-load)
+ SMART_SPLIT_SIM_THRESHOLD = 0.22           # 분할 임계 (코사인 거리)
+ SMART_SPLIT_JACCARD_THRESHOLD_ADD = 0.35   # additive/turn/cause 쪽 Jaccard
+ SMART_SPLIT_JACCARD_THRESHOLD_CONTRAST = 0.40
+ SMART_SPLIT_MIN_CHUNK_LEN = 4              # 너무 짧은 쪼개기 방지
+ SMART_SPLIT_MAX_SPLITS_PER_SENT = 3        # 문장당 최대 분할 수
+ 
+ 
+ # Stable IDs / resume cache
+ ENABLE_STABLE_IDS = True
+ 
+ # Tuner(자동 파라미터) 기본 비율
+ # 작을수록 더 세분화(=클러스터 수 ↑), 클수록 더 합침(=클러스터 수 ↓)
+ TUNER_BASE_PCT_LARGE = 0.005   # N이 큰 셋 (대략 6천 이상)
+ TUNER_BASE_PCT_SMALL = 0.010   # N이 작은 셋
+ 
+ # UMAP 차원/이웃 수의 상·하한 (tuner가 동적으로 설정)
+ TUNER_UMAP_MIN_DIMS = 8
+ TUNER_UMAP_MAX_DIMS = 14
+ TUNER_UMAP_MAX_NEIGHBORS = 100
+ 
+ # 파셋 버킷(예: 당도/식감/외관…) 전용 코스닝(coarsening) 노브
+diff --git a/main.py b/main.py
+index d49b996688b809f3d7f60d241462ea2517117d8f..f2d31d3f67c0100ab228e92a0332589d57b99c85 100644
+--- a/main.py
++++ b/main.py
+@@ -116,81 +116,100 @@ def _ensure_facet_top1(df: pd.DataFrame, *, default: str | None = None) -> pd.Da
+ # --- 유틸: 다양한 facets YAML 스키마를 표준 스키마로 정규화 ---
+ def _load_facets_forgiving(facets_path: Path, facet_embedder):
+     """
+     지원 스키마 예:
+       1) {"facets": [{"name": "...", "keywords": [...]}, ...]}
+       2) {"facets": {"sweetness": {"keywords":[...]}, ...}}
+       3) [{"name": "...", "keywords": [...]}, ...]
+       4) {"sweetness": {"keywords":[...]}, ...} (top-level dict-of-dicts)
+     위를 list-of-facets 표준으로 변환 후 임시 YAML로 저장 → load_facets_yml 재사용.
+     """
+     with facets_path.open("r", encoding="utf-8") as f:
+         y = yaml.safe_load(f) or {}
+ 
+         import os as _os
+         _abs_path = _os.path.abspath(facets_path)
+         _root_type = type(y).__name__
+         _root_keys = list(y.keys())[:10] if isinstance(y, dict) else []
+         logger.info("[FACETS] loaded: %s | root=%s keys=%s", _abs_path, _root_type, _root_keys)
+ 
+     def to_list(obj):
+         """
+         Accept:
+         - list schema: [{"id":..,"name":..,"desc":..}, ...] or {"buckets":[...]}
+         - dict schema: {"facets": {"freshness": {"description": "...", "keywords":[...]}, ...}}
+         """
++
++        def _normalize_keywords(raw):
++            if isinstance(raw, str):
++                raw = [raw]
++            if not isinstance(raw, (list, tuple)):
++                return []
++            out = []
++            for kw in raw:
++                try:
++                    s = str(kw).strip()
++                except Exception:
++                    continue
++                if s:
++                    out.append(s)
++            return out
++
+         # case 1: already a list
+         if isinstance(obj, list):
+             return obj
+         # case 2: dict wrapper
+         if isinstance(obj, dict):
+             # standard: buckets list
+             if "buckets" in obj and isinstance(obj["buckets"], list):
+                 return obj["buckets"]
+             # legacy: facets dict
+             if "facets" in obj and isinstance(obj["facets"], dict) and obj["facets"]:
+                 buckets = []
+                 for name, node in obj["facets"].items():
+                     node = node or {}
+                     # desc: desc > description > keywords → fallback
+                     desc = None
++                    kw_list = _normalize_keywords(node.get("keywords"))
+                     for k in ("desc", "description"):
+                         v = node.get(k)
+                         if v and str(v).strip():
+                             desc = str(v).strip()
+                             break
+                     if not desc:
+-                        kws = node.get("keywords") or []
+-                        if isinstance(kws, (list, tuple)) and kws:
+-                            desc = f"{name} 관련 표현: " + " ".join(map(str, kws))
++                        if kw_list:
++                            desc = f"{name} 관련 표현: " + " ".join(map(str, kw_list))
+                         else:
+                             desc = f"{name}이/가 좋다 나쁘다 만족 불만"
+-                    buckets.append({
++                    bucket = {
+                         "id": str(name).lower().replace(" ", ""),
+                         "name": str(name),
+                         "desc": desc
+-                    })
++                    }
++                    if kw_list:
++                        bucket["keywords"] = kw_list
++                    buckets.append(bucket)
+                 return buckets
+         # fallback
+         raise RuntimeError(f"Unsupported facets YAML schema: {type(obj).__name__}")
+ 
+     facets_list = to_list(y)
+     logger.info("[FACETS] normalized buckets: %d | head=%s",
+                 len(facets_list),
+                 [str(d.get("name") or d.get("id")) for d in facets_list[:3]])
+ 
+     def _try_build_facets(payload, tag):
+         tmp = tempfile.NamedTemporaryFile("w", delete=False, suffix=".yml", encoding="utf-8")
+         yaml.safe_dump(payload, tmp, allow_unicode=True, sort_keys=False)
+         tmp_path = Path(tmp.name)
+         tmp.close()
+         try:
+             obj = load_facets_yml(str(tmp_path), facet_embedder)
+             if obj:
+                 logger.info("[FACETS] load_facets_yml OK via schema=%s", tag)
+                 return obj, tmp_path
+             else:
+                 logger.warning("[FACETS] schema=%s yielded empty from load_facets_yml; will retry with fallback", tag)
+                 return None, tmp_path
+         except Exception as e:
+             logger.warning("[FACETS] schema=%s raised %s; will retry with fallback", tag, e)
+             return None, tmp_path
+diff --git a/pipeline/exporter.py b/pipeline/exporter.py
+index 275d8551ee167b9a6778c6099c92bc68abeb8557..6e3f184c35099db3909c1cd693a792401f335ae3 100644
+--- a/pipeline/exporter.py
++++ b/pipeline/exporter.py
+@@ -19,51 +19,53 @@ _RID = getattr(config, "REVIEW_ID_COL", "review_id")
+ 
+ # ─────────────────────────────────────────────────────────────────────────────
+ # helpers
+ # ─────────────────────────────────────────────────────────────────────────────
+ def _ensure_parent_dir(path: Union[str, Path]) -> None:
+     Path(path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+ 
+ 
+ def _as_str_id(df: pd.DataFrame) -> pd.DataFrame:
+     """ID 컬럼을 문자열로 강제 (merge dtype 오류 방지)."""
+     if _RID in df.columns:
+         df[_RID] = df[_RID].astype(str)
+     return df
+ 
+ 
+ def _ordered_clause_columns(df: pd.DataFrame) -> List[str]:
+     """클러스터/리파인 관련 컬럼을 앞쪽에 배치."""
+     preferred = [
+         "polarity",
+         "facet_bucket",
+         "cluster_label",
+         "refined_label",
+         "refined_cluster_id",
+         "stable_cluster_id",
+         "facet_top1",
++        "facet_top1_score",
+         "facet_topk",
++        "facet_rule_hits",
+     ]
+     cols = list(df.columns)
+     ordered = [c for c in preferred if c in cols] + [c for c in cols if c not in preferred]
+     return ordered
+ 
+ 
+ def _labels_to_csv(labs) -> str:
+     try:
+         if isinstance(labs, (list, tuple, np.ndarray, pd.Series)):
+             return ",".join(map(str, labs))
+         return ""
+     except Exception:
+         return ""
+ 
+ 
+ # ─────────────────────────────────────────────────────────────────────────────
+ # legacy/back-compat utilities
+ # ─────────────────────────────────────────────────────────────────────────────
+ def save_clustered_reviews(
+     df: pd.DataFrame,
+     labels: np.ndarray,
+     out_path: Union[str, Path],
+ ) -> None:
+     """Back-compat helper: save per-review labels to CSV/XLSX.
+     Adds a `cluster_label` (or `cluster_label_2` if already present).
+@@ -177,51 +179,51 @@ def save_clustered_clauses(
+     raw_df = raw_df.copy()
+ 
+     # 필수 컬럼 체크
+     required = [_RID, "clause", "polarity", "cluster_label"]
+     missing = [c for c in required if c not in clause_df.columns]
+     if missing:
+         raise ValueError(f"clause_df에 필수 컬럼 누락: {missing}")
+ 
+     # 타입 보정
+     clause_df["cluster_label"] = pd.to_numeric(
+         clause_df["cluster_label"], errors="coerce"
+     ).fillna(-1).astype(int)
+ 
+     # ID를 문자열로 통일 (merge dtype mismatch 예방)
+     clause_df = _as_str_id(clause_df)
+     raw_df = _as_str_id(raw_df)
+ 
+     has_refined = "refined_cluster_id" in clause_df.columns
+     has_stable = "stable_cluster_id" in clause_df.columns
+ 
+     _ensure_parent_dir(output_path)
+     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+         # 1) clauses 시트: 표준 컬럼 순서 + JSON 문자열 보정
+         clause_out = clause_df.copy()
+         # 리스트/딕셔너리류는 JSON 문자열로 표시
+-        for col in ("facet_topk", "facet_scores", "representatives"):
++        for col in ("facet_topk", "facet_rule_hits", "facet_scores", "representatives"):
+             if col in clause_out.columns:
+                 clause_out[col] = clause_out[col].apply(
+                     lambda v: json.dumps(v, ensure_ascii=False)
+                     if not isinstance(v, (str, type(None)))
+                     else ("" if v is None else v)
+                 )
+         clause_out = clause_out[_ordered_clause_columns(clause_out)]
+         clause_out.to_excel(writer, sheet_name="clauses", index=False)
+ 
+         # 2) mapping 시트: review별 클러스터 집합
+         mapping = (
+             clause_df.groupby(_RID)["cluster_label"]
+             .unique()
+             .reset_index()
+             .rename(columns={"cluster_label": "cluster_labels"})
+         )
+         mapping["cluster_labels"] = mapping["cluster_labels"].apply(lambda arr: list(arr))
+ 
+         if has_refined:
+             mapping_ref = (
+                 clause_df.groupby(_RID)["refined_cluster_id"]
+                 .unique()
+                 .reset_index()
+                 .rename(columns={"refined_cluster_id": "refined_cluster_ids"})
+             )
+diff --git a/pipeline/keywords.py b/pipeline/keywords.py
+index c4bac3e4c9f1673a700c520eb1ad53b125e6d71b..25f19e6dbfcace7c452c8c45d7b74d0640811ffc 100644
+--- a/pipeline/keywords.py
++++ b/pipeline/keywords.py
+@@ -1,49 +1,50 @@
+ from __future__ import annotations
+ 
+ import logging
+ import math
+ import re
+ from collections import Counter
+ from typing import Dict, List, Optional
+ 
+ import config
+ import numpy as np
+ from sklearn.feature_extraction.text import CountVectorizer
+ from keybert import KeyBERT
+ from kiwipiepy import Kiwi
+ from pipeline.embedder import _get_model
+ 
+ logger = logging.getLogger(__name__)
+ logger.setLevel(logging.INFO)
+ 
+ # Tokenizer
+ kiwi = Kiwi()
+ 
+ # Internal KeyBERT cache
+ _kw_models: Dict[str, KeyBERT] = {}
+-STOPWORD_SET = set(getattr(config, "KOREAN_STOPWORDS", []))
++EXTRA_STOPWORDS = {w.strip() for w in getattr(config, "KEYWORD_EXTRA_STOPWORDS", []) if w}
++STOPWORD_SET = set(getattr(config, "KOREAN_STOPWORDS", [])) | EXTRA_STOPWORDS
+ ALLOWED_POS_TAGS = set(getattr(config, "ALLOWED_POS_TAGS_KO", set()))
+ 
+ 
+ def _normalize_token_form(token) -> Optional[str]:
+     """Return a normalized surface form for keyword comparison."""
+ 
+     base = getattr(token, "lemma", None) or getattr(token, "form", "")
+     if not base:
+         return None
+ 
+     if base.endswith("하") and len(base) > 1:
+         base = base[:-1]
+     return base
+ 
+ 
+ def is_valid_keyword_token(token, normalized_form: Optional[str] = None, stopwords: Optional[set] = None) -> bool:
+     """Check whether a token passes POS/stopword/regex filters for keyword use."""
+ 
+     stopword_set = stopwords or STOPWORD_SET
+     tag = getattr(token, "tag", "")
+     if ALLOWED_POS_TAGS and tag not in ALLOWED_POS_TAGS:
+         return False
+ 
+     normalized_form = normalized_form or _normalize_token_form(token)
+     if not normalized_form:
+@@ -88,52 +89,59 @@ def _resolve_keyword_model_name(model_name: Optional[str]) -> str:
+         return semantic_cfg.model
+     return getattr(config, "MODEL_NAME", "jhgan/ko-sbert-sts")
+ 
+ 
+ def _get_vectorizer() -> CountVectorizer:
+     """
+     Create a CountVectorizer using config-defined token pattern, ngram range, and stopwords.
+     """
+     return CountVectorizer(
+         token_pattern=config.TOKEN_PATTERN,
+         stop_words=list(STOPWORD_SET),
+         ngram_range=config.KEYWORD_NGRAM_RANGE,
+     )
+ 
+ 
+ def _sample_and_normalize(sents: List[str]) -> str:
+     """
+     Sample up to config.MAX_KEYWORD_DOCS sentences, normalize nouns/lemmas, and concatenate.
+     """
+     docs = sents.copy()
+     if len(docs) > config.MAX_KEYWORD_DOCS:
+         import random
+         random.seed(config.RANDOM_SEED if hasattr(config, 'RANDOM_SEED') else 0)
+         docs = random.sample(docs, config.MAX_KEYWORD_DOCS)
+     tokens: List[str] = []
++    weighted_tags = {"VA", "VV"}
+     for sent in docs:
+-        tokens.extend(_tokenize_sentence(sent, stopwords=STOPWORD_SET))
++        for tok in kiwi.tokenize(sent or ""):
++            normalized = normalize_keyword_token(tok, stopwords=STOPWORD_SET)
++            if not normalized:
++                continue
++
++            weight = 2 if getattr(tok, "tag", "")[:2] in weighted_tags else 1
++            tokens.extend([normalized] * weight)
+     return " ".join(tokens)
+ 
+ 
+ def _get_kw_model(model_name: Optional[str]) -> KeyBERT:
+     """Load and cache a KeyBERT model."""
+     resolved = _resolve_keyword_model_name(model_name)
+     if resolved not in _kw_models:
+         logger.info("⬇️ Loading KeyBERT model: %s", resolved)
+         _kw_models[resolved] = KeyBERT(resolved)
+     return _kw_models[resolved]
+ 
+ 
+ def _get_semantic_helper(model_name: Optional[str] = None, device: Optional[str] = None):
+     """Load the semantic SBERT helper defined in config.semantic.*."""
+ 
+     semantic_cfg = getattr(config, "semantic", None)
+     resolved_model = model_name or getattr(semantic_cfg, "model", None) or getattr(config, "MODEL_NAME", None)
+     resolved_device = device or getattr(semantic_cfg, "device", None)
+     if not resolved_model:
+         raise ValueError("Semantic helper model name is required for keyword extraction")
+     return _get_model(resolved_model, resolved_device)
+ 
+ 
+ def _prepare_cluster_documents(cluster_reps: Dict[int, List[str]]) -> tuple[list[str], list[int]]:
+     """Tokenize and filter cluster representative sentences for vectorization."""
+diff --git a/pipeline/refiner.py b/pipeline/refiner.py
+index a7c952bacc366120c2582d45707c9fdfb4806eaf..b1b014910fb51e0fb958eb32942006f45facccbb 100644
+--- a/pipeline/refiner.py
++++ b/pipeline/refiner.py
+@@ -1,75 +1,81 @@
+ ﻿# pipeline/refiner.py
+ # Domain-agnostic refinement layer
+ # - Facet routing via facet description embeddings
+ # - Heterogeneity check (silhouette) and optional local sub-clustering (KMeans)
+ # - Stable refined ids; non-destructive to original cluster labels
+ # - All logs are ASCII only to avoid console encoding issues on Windows
+ 
+ from __future__ import annotations
+ 
+ from dataclasses import dataclass
+ from typing import List, Dict, Tuple, Optional, Any
+ 
+ import logging
++import math
++import json
+ import numpy as np
+ import pandas as pd
+ from sklearn.cluster import KMeans
+ from sklearn.metrics import silhouette_score
++import config
+ 
+ try:
+     import yaml  # pyyaml
+ except Exception:  # pragma: no cover
+     yaml = None
+ 
+ from pathlib import Path
+ import io
+ import os
+ 
++from pipeline.text_utils import tokenize_lemmas
++
+ logger = logging.getLogger(__name__)
+ 
+ __all__ = [
+     "Facet",
+     "load_facets_yml",
+     "load_facets_for_category",
+     "normalize_category_facet_config",
+     "assign_category_facets_keyword",
+     "compute_facet_buckets",
+     "apply_facet_routing",
+     "refine_clusters",
+ ]
+ 
+ # ---------------------------------------------------------------------
+ # Models
+ # ---------------------------------------------------------------------
+ 
+ @dataclass
+ class Facet:
+     id: str
+     name: str
+     desc: str
+     emb: np.ndarray  # normalized vector
++    keywords: List[str] | None = None
+ 
+ 
+ # ---------------------------------------------------------------------
+ # Utilities
+ # ---------------------------------------------------------------------
+ 
+ def _normalize_rows(x: np.ndarray) -> np.ndarray:
+     x = np.asarray(x, dtype=np.float32)
+     if x.ndim != 2:
+         raise ValueError("expected 2-D array for normalization")
+     n = np.linalg.norm(x, axis=1, keepdims=True) + 1e-12
+     return x / n
+ 
+ 
+ def _safe_int(v: Any) -> Optional[int]:
+     try:
+         return int(v)
+     except Exception:
+         return None
+ 
+ 
+ def _is_other(v: Any, other_label_value: Any) -> bool:
+     try:
+         if isinstance(v, (int, np.integer)) and int(v) < 0:
+             return True
+@@ -128,93 +134,114 @@ def load_facets_yml(path: str | Path, facet_embedder, *args, **kwargs) -> List[F
+             if isinstance(obj.get("facets"), list):
+                 return obj["facets"]
+             if isinstance(obj.get("facets"), dict):
+                 out = []
+                 for name, node in obj["facets"].items():
+                     node = node or {}
+                     out.append({"name": name, **node})
+                 return out
+             # top-level dict of dicts
+             if all(isinstance(v, (dict, type(None))) for v in obj.values()):
+                 out = []
+                 for name, node in obj.items():
+                     node = node or {}
+                     out.append({"name": name, **node})
+                 return out
+         return []
+ 
+     items = _as_list(y)
+     if not items:
+         logger.error("[FACETS] no items found in %s (root=%s)", os.path.abspath(path), type(y).__name__)
+         return None
+ 
+     names: List[str] = []
+     ids: List[str] = []
+     descs: List[str] = []
++    keywords_all: List[List[str]] = []
+     skipped = 0
+ 
++    def _normalize_keywords_field(raw: Any) -> List[str]:
++        if isinstance(raw, str):
++            raw = [raw]
++        if not isinstance(raw, (list, tuple)):
++            return []
++        out: List[str] = []
++        for kw in raw:
++            try:
++                s = str(kw).strip()
++            except Exception:
++                continue
++            if s:
++                out.append(s)
++        return out
++
+     for i, it in enumerate(items):
+         name = str(it.get("name") or it.get("id") or f"F{i}")
+         fid = str(it.get("id") or name).lower().replace(" ", "_")
++        keywords = _normalize_keywords_field(it.get("keywords"))
+         # desc priority: desc > description > keywords(list) > fallback skip
+         desc = it.get("desc") or it.get("description")
+         if not desc:
+             kws = it.get("keywords")
+             if isinstance(kws, (list, tuple)) and kws:
+                 desc = ", ".join(map(str, kws))
+         desc = (str(desc).strip() if desc else "")
+         if not desc:
+             skipped += 1
+             continue
+         # normalize slashes into commas to stabilize embedding cues
+         desc = desc.replace(" / ", ", ").replace("/", ", ")
+         names.append(name)
+         ids.append(fid)
+         descs.append(desc)
++        keywords_all.append(keywords)
+ 
+     if not names:
+         logger.error("[FACETS] all items were empty after normalization (skipped=%d) in %s", skipped, os.path.abspath(path))
+         return None
+ 
+     if facet_embedder is None:
+         logger.error("[FACETS] facet_embedder is None")
+         return None
+ 
+     try:
+         vecs = facet_embedder.encode(
+             descs,
+             batch_size=64,
+             convert_to_numpy=True,
+             normalize_embeddings=True,
+             show_progress_bar=False,
+         )
+         vecs = _normalize_rows(vecs)
+     except Exception as e:
+         logger.exception("[FACETS] embedding failed: %s", e)
+         return None
+ 
+-    facets: List[Facet] = [Facet(id=ids[i], name=names[i], desc=descs[i], emb=vecs[i]) for i in range(len(names))]
++    facets: List[Facet] = [
++        Facet(id=ids[i], name=names[i], desc=descs[i], emb=vecs[i], keywords=keywords_all[i])
++        for i in range(len(names))
++    ]
+     logger.info(
+         "[FACETS] loaded=%d usable (skipped=%d) | emb.shape=(%d,%d) | head=%s",
+         len(facets),
+         skipped,
+         vecs.shape[0],
+         vecs.shape[1],
+         [f.name for f in facets[:3]],
+     )
+     return facets
+ 
+ 
+ def load_facets_for_category(
+     category: str,
+     sku: Optional[str] = None,
+     *,
+     path: str | Path = Path("rules/facets_by_category.yml"),
+     fallback: Any = None,
+ ) -> Any:
+     """Load category-specific facet config from ``rules/facets_by_category.yml``.
+ 
+     Returns the category node when present, otherwise falls back to ``fallback``
+     (typically the global facet config). Missing/parse errors are logged but do
+     not raise so downstream routing can continue unchanged.
+     """
+ 
+@@ -403,184 +430,279 @@ def compute_facet_buckets(
+         return []
+ 
+     def _pick_bucket(ids: List[str], pol: str) -> str:
+         facet = sorted(ids)[0] if ids else unmatched_facet_name
+         polarity = str(pol).strip().lower() or "neu"
+         return f"{facet}_{polarity}"
+ 
+     out[bucket_column] = [
+         _pick_bucket(_coerce_list(ids), pol)
+         for ids, pol in zip(out[facet_ids_column], out[polarity_column])
+     ]
+ 
+     return out
+ 
+ 
+ # ---------------------------------------------------------------------
+ # Facet routing
+ # ---------------------------------------------------------------------
+ 
+ def route_to_facets(
+     clause_embs: np.ndarray,
+     facets: List[Facet],
+     *,
+     top_k: int = 2,
+     score_threshold: float = 0.32,
+-) -> Tuple[List[Optional[str]], List[List[Tuple[str, float]]]]:
++    clause_texts: Optional[List[str]] = None,
++    keyword_bonus_lambda: Optional[float] = None,
++) -> Tuple[
++    List[Optional[str]],
++    List[List[Tuple[str, float]]],
++    List[Optional[float]],
++    List[Dict[str, List[str]]],
++]:
+     """
+-    Compute cosine similarity (dot on normalized vectors) between each clause and facet.
++    Compute cosine similarity (dot on normalized vectors) between each clause and facet
++    and optionally add a lemma-based keyword bonus.
+     Returns:
+-      top1 list of facet ids (or None) and topk list of (facet_id, score).
++      - top1 list of facet ids (or None)
++      - topk list of (facet_id, score)
++      - top1_scores list aligned to ``top1``
++      - keyword_hits per clause: facet_id -> matched keyword tokens
+     """
+     if not facets:
+-        return [None] * len(clause_embs), [[] for _ in range(len(clause_embs))]
++        empty = [[] for _ in range(len(clause_embs))]
++        return [None] * len(clause_embs), empty, [None] * len(clause_embs), [dict() for _ in range(len(clause_embs))]
+     F = np.stack([f.emb for f in facets], axis=0)  # (F, D), already normalized
+     X = _normalize_rows(clause_embs)               # (N, D)
+     sims = X @ F.T                                 # (N, F)
+ 
++    # Lexical bonus via lemma-based keyword hits
++    scores = np.array(sims, copy=True)
++    lam = keyword_bonus_lambda
++    if lam is None:
++        lam = float(getattr(config, "FACET_KEYWORD_BONUS_LAMBDA", 0.0))
++
++    keyword_hits: List[Dict[str, List[str]]] = [dict() for _ in range(len(X))]
++    clause_tokens: Optional[List[set[str]]] = None
++    facet_keyword_sets: Optional[List[set[str]]] = None
++
++    if clause_texts is not None and len(clause_texts) == len(X):
++        clause_tokens = [set(tokenize_lemmas(txt)) for txt in clause_texts]
++        facet_keyword_sets = []
++        for facet in facets:
++            tokens: List[str] = []
++            for kw in facet.keywords or []:
++                tokens.extend(tokenize_lemmas(str(kw)))
++            facet_keyword_sets.append(set(tokens))
++
++    if clause_tokens is not None and facet_keyword_sets is not None and any(facet_keyword_sets):
++        for i, tokens in enumerate(clause_tokens):
++            if not tokens:
++                continue
++            for j, facet_kws in enumerate(facet_keyword_sets):
++                if not facet_kws:
++                    continue
++                matched_tokens = list(tokens & facet_kws)
++                if not matched_tokens:
++                    continue
++                keyword_hits[i][facets[j].id] = sorted(matched_tokens)
++                if lam > 0:
++                    scores[i, j] += lam * math.log1p(len(matched_tokens))
++
+     k = max(1, min(top_k, sims.shape[1]))
+     # partial top-k then stable sort
+-    idx_part = np.argpartition(-sims, kth=k - 1, axis=1)[:, :k]
+-    sims_part = np.take_along_axis(sims, idx_part, axis=1)
++    idx_part = np.argpartition(-scores, kth=k - 1, axis=1)[:, :k]
++    sims_part = np.take_along_axis(scores, idx_part, axis=1)
+     order = np.argsort(-sims_part, axis=1)
+     idx_sorted = np.take_along_axis(idx_part, order, axis=1)
+     sims_sorted = np.take_along_axis(sims_part, order, axis=1)
+ 
+     top1: List[Optional[str]] = []
+     topk: List[List[Tuple[str, float]]] = []
++    top1_scores: List[Optional[float]] = []
+ 
+     for i in range(sims.shape[0]):
+         pairs: List[Tuple[str, float]] = []
+         for j in range(k):
+             score = float(sims_sorted[i, j])
+             if score >= score_threshold:
+                 pairs.append((facets[idx_sorted[i, j]].id, score))
+         topk.append(pairs)
+         top1.append(pairs[0][0] if pairs else None)
++        top1_scores.append(pairs[0][1] if pairs else None)
+ 
+-    return top1, topk
++    return top1, topk, top1_scores, keyword_hits
+ 
+ 
+ def apply_facet_routing(
+     df: pd.DataFrame,
+     facets: List[Facet],
+     *,
+     clause_embs: Optional[np.ndarray] = None,
+     embedder: Optional[Any] = None,
+     text_column: str = "clause",
+     top_k: int = 2,
+     threshold: float = 0.32,
+     category: Optional[str] = None,
+     facet_config: Any = None,
+     sku: Optional[str] = None,
+     ) -> pd.DataFrame:
+     """
+     Fill facet_top1 / facet_topk using cosine similarity to facets.
+ 
+     Inputs:
+       - facets: List[Facet] with normalized emb vectors
+       - clause_embs: if provided, use directly; else, encode df[text_column] with embedder
+       - embedder: SentenceTransformer-like (encode with normalize_embeddings=True)
+     Notes:
+       - Existing values are preserved; only NaN/blank cells are filled.
+       - facet_topk is a JSON-like string "[(id, score), ...]" for readability.
+     """
+     if df is None or df.empty or not facets:
+         return df
+ 
+     # get clause vectors
+     if clause_embs is None:
+         if embedder is None:
+             logger.warning("[FACETS] no clause_embs and no embedder; routing skipped")
+             return df
+         texts = df[text_column].astype(str).tolist()
+         clause_embs = embedder.encode(
+             texts,
+             batch_size=256,
+             convert_to_numpy=True,
+             normalize_embeddings=True,
+             show_progress_bar=False,
+         )
+     clause_embs = _normalize_rows(np.asarray(clause_embs, dtype=np.float32))
+ 
+     # compute routing
+-    top1_vals, topk_vals = route_to_facets(
+-        clause_embs, facets, top_k=top_k, score_threshold=float(threshold)
++    clause_texts = df[text_column].astype(str).tolist()
++    top1_vals, topk_vals, top1_scores, keyword_hits = route_to_facets(
++        clause_embs,
++        facets,
++        top_k=top_k,
++        score_threshold=float(threshold),
++        clause_texts=clause_texts,
+     )
+ 
+     top1_series = pd.Series([v if v else None for v in top1_vals], index=df.index, dtype=object)
++    top1_score_series = pd.Series(
++        [float(v) if v is not None else None for v in top1_scores],
++        index=df.index,
++        dtype=object,
++    )
+     # store as simple str to keep xlsx friendly and avoid quoting issues
+     topk_series = pd.Series(
+-        [str(pairs) if pairs else None for pairs in topk_vals],
++        [
++            json.dumps([[fid, score] for fid, score in pairs], ensure_ascii=False)
++            if pairs
++            else None
++            for pairs in topk_vals
++        ],
++        index=df.index,
++        dtype=object,
++    )
++
++    rule_hits_series = pd.Series(
++        [
++            json.dumps(keyword_hits[i].get(top1_vals[i], []) or [], ensure_ascii=False)
++            if keyword_hits
++            else "[]"
++            for i in range(len(top1_vals))
++        ],
+         index=df.index,
+         dtype=object,
+     )
+ 
+     out = df.copy()
+ 
+     def _extract_allowed_facet_ids(cfg: Any) -> Optional[set]:
+         if not isinstance(cfg, dict):
+             return None
+         facets_node = cfg.get("facets") if isinstance(cfg, dict) else None
+         if isinstance(facets_node, dict):
+             return set(facets_node.keys())
+         try:
+             if all(isinstance(v, (dict, type(None))) for v in cfg.values()):
+                 return set(cfg.keys())
+         except Exception:
+             return None
+         return None
+ 
+     allowed_facet_ids = _extract_allowed_facet_ids(facet_config)
+     logger.info(
+         "[FACETS] category fallback facets for sku=%s: %s",
+         sku or "-",
+         sorted(list(allowed_facet_ids)) if allowed_facet_ids else "none",
+     )
+ 
+     # facet_top1
+     if "facet_top1" in out.columns:
+         exists = out["facet_top1"]
+         needs = exists.isna() | exists.astype(str).str.strip().isin(["", "nan", "none", "None"])
+         out.loc[needs, "facet_top1"] = top1_series.loc[needs]
+     else:
+         out["facet_top1"] = top1_series
+ 
++    # facet_top1_score
++    if "facet_top1_score" in out.columns:
++        exists = out["facet_top1_score"]
++        needs = exists.isna() | exists.astype(str).str.strip().isin(["", "nan", "none", "None"])
++        out.loc[needs, "facet_top1_score"] = top1_score_series.loc[needs]
++    else:
++        out["facet_top1_score"] = top1_score_series
++
+     # facet_topk
+     if "facet_topk" in out.columns:
+         exists = out["facet_topk"]
+         needs = exists.isna() | exists.astype(str).str.strip().isin(["", "nan", "none", "None", "[]", "{}"])
+         out.loc[needs, "facet_topk"] = topk_series.loc[needs]
+     else:
+         out["facet_topk"] = topk_series
+ 
++    # facet_rule_hits
++    if "facet_rule_hits" in out.columns:
++        exists = out["facet_rule_hits"]
++        needs = exists.isna() | exists.astype(str).str.strip().isin(["", "nan", "none", "None", "[]", "{}"])
++        out.loc[needs, "facet_rule_hits"] = rule_hits_series.loc[needs]
++    else:
++        out["facet_rule_hits"] = rule_hits_series
++
+     # clean blanks to NaN
+     mask_blank1 = out["facet_top1"].astype(str).str.strip().isin(["", "nan", "none", "None"])
+     out.loc[mask_blank1, "facet_top1"] = None
+     if "facet_topk" in out.columns:
+         mask_blankk = out["facet_topk"].astype(str).str.strip().isin(["", "nan", "none", "None"])
+         out.loc[mask_blankk, "facet_topk"] = None
++    if "facet_top1_score" in out.columns:
++        mask_blank_score = out["facet_top1_score"].astype(str).str.strip().isin(["", "nan", "none", "None"])
++        out.loc[mask_blank_score, "facet_top1_score"] = None
++    if "facet_rule_hits" in out.columns:
++        mask_blank_hits = out["facet_rule_hits"].astype(str).str.strip().isin(["", "nan", "none", "None"])
++        out.loc[mask_blank_hits, "facet_rule_hits"] = "[]"
+ 
+     # ---------------------------------------------------------------
+     # Category-aware keyword facet assignment (non-destructive)
+     # ---------------------------------------------------------------
+     normalized_cfg = normalize_category_facet_config(facet_config)
+     if normalized_cfg:
+         try:
+             out = assign_category_facets_keyword(
+                 out,
+                 {"facets": normalized_cfg},
+                 text_column=text_column,
+                 polarity_column="polarity",
+                 output_column="facet_ids",
+             )
+             out = compute_facet_buckets(
+                 out,
+                 facet_ids_column="facet_ids",
+                 polarity_column="polarity",
+                 bucket_column="facet_bucket",
+                 unmatched_facet_name="unmatched",
+             )
+ 
+             def _has_facets(v: Any) -> bool:
+                 if isinstance(v, (list, tuple, set)):
+                     return len(v) > 0
+@@ -740,73 +862,106 @@ def refine_clusters(
+     max_local_k: int = 4,
+     other_label_value: str | int = "other",
+     stable_id_prefix: int = 0,  # negative=0, neutral=1, positive=2
+ ) -> pd.DataFrame:
+     """
+     Refine within one polarity.
+     Non-destructive: keeps original cluster_label and adds refined_label / refined_cluster_id.
+     Also fills facet_top1 / facet_topk from provided facets.
+     Assumes df_clauses contains this polarity only and aligns with clause_embs.
+     """
+     if df_clauses is None or df_clauses.empty:
+         return df_clauses
+ 
+     df = df_clauses.copy()
+ 
+     if "cluster_label" not in df.columns:
+         raise ValueError("cluster_label column is required")
+ 
+     # normalize labels up-front to avoid int('other') errors
+     df["cluster_label"] = df["cluster_label"].apply(_coerce_to_int_or_other)
+ 
+     # normalize embeddings
+     clause_embs = _normalize_rows(np.asarray(clause_embs, dtype=np.float32))
+ 
+     # facet routing into new columns, preserving existing annotations
+-    top1_vals, topk_vals = route_to_facets(
+-        clause_embs, facets, top_k=top_k_facets, score_threshold=facet_threshold
++    clause_texts = df["clause"].astype(str).tolist() if "clause" in df.columns else None
++    top1_vals, topk_vals, top1_scores, keyword_hits = route_to_facets(
++        clause_embs,
++        facets,
++        top_k=top_k_facets,
++        score_threshold=facet_threshold,
++        clause_texts=clause_texts,
+     )
+     top1_series = pd.Series([v if v else None for v in top1_vals], index=df.index, dtype=object)
+-    topk_series = pd.Series([str(p) if p else None for p in topk_vals], index=df.index, dtype=object)
++    top1_score_series = pd.Series(
++        [float(v) if v is not None else None for v in top1_scores], index=df.index, dtype=object
++    )
++    topk_series = pd.Series(
++        [json.dumps([[fid, score] for fid, score in pairs], ensure_ascii=False) if pairs else None for pairs in topk_vals],
++        index=df.index,
++        dtype=object,
++    )
++    rule_hits_series = pd.Series(
++        [json.dumps(keyword_hits[i].get(top1_vals[i], []) or [], ensure_ascii=False) for i in range(len(top1_vals))],
++        index=df.index,
++        dtype=object,
++    )
+ 
+     if "facet_top1" in df.columns:
+         needs = df["facet_top1"].isna() | df["facet_top1"].astype(str).str.strip().isin(["", "nan", "none", "None"])
+         df.loc[needs, "facet_top1"] = top1_series.loc[needs]
+     else:
+         df["facet_top1"] = top1_series
+ 
+     if "facet_topk" in df.columns:
+         needs = df["facet_topk"].isna() | df["facet_topk"].astype(str).str.strip().isin(["", "nan", "none", "None", "[]", "{}"])
+         df.loc[needs, "facet_topk"] = topk_series.loc[needs]
+     else:
+         df["facet_topk"] = topk_series
+ 
++    if "facet_top1_score" in df.columns:
++        needs = df["facet_top1_score"].isna() | df["facet_top1_score"].astype(str).str.strip().isin(["", "nan", "none", "None"])
++        df.loc[needs, "facet_top1_score"] = top1_score_series.loc[needs]
++    else:
++        df["facet_top1_score"] = top1_score_series
++
++    if "facet_rule_hits" in df.columns:
++        needs = df["facet_rule_hits"].isna() | df["facet_rule_hits"].astype(str).str.strip().isin(["", "nan", "none", "None", "[]", "{}"])
++        df.loc[needs, "facet_rule_hits"] = rule_hits_series.loc[needs]
++    else:
++        df["facet_rule_hits"] = rule_hits_series
++
+     # clean blanks
+     blank1 = df["facet_top1"].astype(str).str.strip().isin(["", "nan", "none", "None"])
+     df.loc[blank1, "facet_top1"] = None
+     blankk = df["facet_topk"].astype(str).str.strip().isin(["", "nan", "none", "None"])
+     df.loc[blankk, "facet_topk"] = None
++    blanks = df["facet_top1_score"].astype(str).str.strip().isin(["", "nan", "none", "None"])
++    df.loc[blanks, "facet_top1_score"] = None
++    blank_hits = df["facet_rule_hits"].astype(str).str.strip().isin(["", "nan", "none", "None"])
++    df.loc[blank_hits, "facet_rule_hits"] = "[]"
+ 
+     # default refined_label = original cluster_label
+     df["refined_label"] = df["cluster_label"].values
+ 
+     # split clusters if heterogeneous
+     for cl, sub in df.groupby("cluster_label", sort=False):
+         if _is_other(cl, other_label_value):
+             continue
+         idx = sub.index.to_numpy()
+         if idx.size < min_cluster_size_for_split:
+             continue
+         X = clause_embs[idx]
+         sil, best_k = heterogeneity_score(X, min_k=2, max_k=max_local_k)
+         if best_k and sil >= hetero_sil_threshold:
+             sub_labels = local_subcluster_kmeans(X, k=best_k)
+             base = _safe_int(cl)
+             base = base if (base is not None and base >= 0) else 0
+             df.loc[idx, "refined_label"] = [base * 10 + int(s) for s in sub_labels]
+ 
+     # stable refined id within polarity namespace
+     prefix_map = {"negative": 0, "neutral": 1, "positive": 2}
+     try:
+         prefix = int(stable_id_prefix)
+     except (TypeError, ValueError):
+         prefix = prefix_map.get(polarity, 0)
+diff --git a/pipeline/text_utils.py b/pipeline/text_utils.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..26d0bcbe8519cd28f796eb3783fcd6b8c7fe30c5
+--- /dev/null
++++ b/pipeline/text_utils.py
+@@ -0,0 +1,63 @@
++from __future__ import annotations
++
++from typing import List
++
++from kiwipiepy import Kiwi
++
++# Shared Kiwi instance to avoid repeated initialization overhead
++_kiwi = Kiwi()
++
++# POS tags to drop: particles, endings, symbols, and punctuation
++_EXCLUDED_POS = {
++    "JKS",
++    "JKC",
++    "JKG",
++    "JKO",
++    "JKB",
++    "JKV",
++    "JKQ",
++    "JC",
++    "JX",
++    "EP",
++    "EF",
++    "EC",
++    "ETN",
++    "ETM",
++    "SF",
++    "SP",
++    "SS",
++    "SE",
++    "SO",
++    "SW",
++}
++
++
++def _normalize_token(token) -> str | None:
++    base = getattr(token, "lemma", None) or getattr(token, "form", "")
++    if not base:
++        return None
++    base = base.strip().lower()
++    if not base:
++        return None
++    return base
++
++
++def tokenize_lemmas(text: str) -> List[str]:
++    """Tokenize Korean text into normalized lemma-like tokens using Kiwi.
++
++    - Drops particles, endings, and symbol-like POS tags.
++    - Prefers lemma when available to unify conjugations (e.g., "비싸요" → "비싸다").
++    """
++
++    tokens: List[str] = []
++    for tok in _kiwi.tokenize(text or ""):
++        tag = getattr(tok, "tag", "")
++        if tag in _EXCLUDED_POS:
++            continue
++        normalized = _normalize_token(tok)
++        if normalized:
++            tokens.append(normalized)
++    return tokens
++
++
++__all__ = ["tokenize_lemmas"]
+diff --git a/scripts/export_cluster_debug.py b/scripts/export_cluster_debug.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..466a4ed79b5f7636eba8269c93d0b24775907327
+--- /dev/null
++++ b/scripts/export_cluster_debug.py
+@@ -0,0 +1,131 @@
++from __future__ import annotations
++
++import argparse
++import glob
++import json
++from collections import Counter
++from pathlib import Path
++from typing import Iterable, List
++
++import pandas as pd
++
++
++def _parse_args() -> argparse.Namespace:
++    parser = argparse.ArgumentParser(description="Export cluster-level debug CSV from clustered clause workbooks.")
++    parser.add_argument(
++        "--input_glob",
++        required=True,
++        help="Glob pattern for *_clauses_clustered_*.xlsx files (e.g., output/<SKU>/*_clauses_clustered_*.xlsx)",
++    )
++    parser.add_argument("--output", required=True, help="Output CSV path for the aggregated debug view.")
++    return parser.parse_args()
++
++
++def _load_clauses(path: Path) -> pd.DataFrame:
++    try:
++        return pd.read_excel(path, sheet_name="clauses")
++    except ValueError:
++        # Fallback: load first sheet if named sheet is missing
++        return pd.read_excel(path)
++
++
++def _parse_json_list(val) -> List[str]:
++    if val is None:
++        return []
++    if isinstance(val, list):
++        return [str(v) for v in val]
++    if isinstance(val, str):
++        val = val.strip()
++        if not val:
++            return []
++        try:
++            parsed = json.loads(val)
++            if isinstance(parsed, list):
++                return [str(v) for v in parsed]
++        except Exception:
++            return [val]
++    return []
++
++
++def _value_counts_json(series: Iterable) -> str:
++    counts = Counter(x for x in series if pd.notna(x))
++    ordered = dict(counts.most_common())
++    return json.dumps(ordered, ensure_ascii=False)
++
++
++def _flatten_rule_hits(series: pd.Series) -> Counter:
++    counter: Counter = Counter()
++    for val in series:
++        hits = _parse_json_list(val)
++        counter.update(hits)
++    return counter
++
++
++def _pick_keywords(group: pd.DataFrame) -> str:
++    if "keywords" in group.columns:
++        for val in group["keywords"]:
++            tokens = _parse_json_list(val)
++            if tokens:
++                return ", ".join(tokens)
++            if isinstance(val, str) and val.strip():
++                return val
++    return ""
++
++
++def _pick_representatives(group: pd.DataFrame, clause_col: str = "clause", top_n: int = 3) -> str:
++    if "representatives" in group.columns:
++        for val in group["representatives"]:
++            reps = _parse_json_list(val)
++            if reps:
++                return " || ".join(reps[:top_n])
++    clauses = group.get(clause_col, [])
++    return " || ".join([str(c) for c in clauses.head(top_n)]) if hasattr(clauses, "head") else ""
++
++
++def _facet_top1_mode(series: pd.Series):
++    non_null = series.dropna()
++    if non_null.empty:
++        return None
++    modes = non_null.mode()
++    return modes.iloc[0] if not modes.empty else None
++
++
++def main() -> None:
++    args = _parse_args()
++    files = sorted(glob.glob(args.input_glob))
++    if not files:
++        raise SystemExit(f"No files matched pattern: {args.input_glob}")
++
++    records = []
++    for file_path in files:
++        path = Path(file_path)
++        df = _load_clauses(path)
++        sku = path.stem.split("_")[0] if path.stem else path.parent.name
++
++        for (polarity, cluster_label), group in df.groupby(["polarity", "cluster_label"]):
++            facet_distribution = _value_counts_json(group.get("facet_top1", []))
++            rule_hits_counter = _flatten_rule_hits(group.get("facet_rule_hits", pd.Series(dtype=object)))
++            facet_mode = _facet_top1_mode(group.get("facet_top1", pd.Series(dtype=object)))
++            record = {
++                "file": str(path),
++                "sku": sku,
++                "polarity": polarity,
++                "cluster_label": cluster_label,
++                "n_clauses": len(group),
++                "facet_top1_mode": facet_mode,
++                "facet_top1_distribution": facet_distribution,
++                "rule_hits_top": json.dumps(dict(rule_hits_counter.most_common(10)), ensure_ascii=False),
++                "keywords": _pick_keywords(group),
++                "rep_sentences": _pick_representatives(group),
++            }
++            records.append(record)
++
++    out_df = pd.DataFrame(records)
++    out_path = Path(args.output)
++    out_path.parent.mkdir(parents=True, exist_ok=True)
++    out_df.to_csv(out_path, index=False)
++    print(f"Saved cluster_debug CSV → {out_path} ({len(out_df)} rows)")
++
++
++if __name__ == "__main__":
++    main()
