@@ -1,5 +1,6 @@
 import argparse  # NEW: CLI 인자 파싱 추가
 import logging  # NEW: INFO 로깅 추가
+import time
 from pathlib import Path
 import pandas as pd
 
@@ -56,23 +57,26 @@ def load_all_clauses(strategy="latest"):  # CHANGED: strategy 파라미터 추�
             raise ValueError(f"Unknown strategy: {strategy}")
 
     if not clause_files:
-        print("No clause files found.")
+        logger.warning("No clause files found.")
         return None
 
-    logger.info(  # NEW: 선택된 파일 목록을 INFO 로그로 남김
-        "[ANALYZE] using %d clustered files (strategy=%s); sample=%s",
+    skus = {p.parent.name for p in clause_files}
+    logger.info(
+        "Found %d clustered clause workbooks across %d SKUs (strategy=%s); sample=%s",
         len(clause_files),
+        len(skus),
         strategy,
         [p.name for p in clause_files[:5]],
     )
 
     frames = []
-    for path in clause_files:
+    for idx, path in enumerate(clause_files, 1):
+        logger.info("Processing file %d/%d: %s", idx, len(clause_files), path)
         sku = path.parent.name
         try:
             df = pd.read_excel(path)
         except Exception as e:
-            print(f"Failed to read {path}: {e}")
+            logger.exception("Failed to read %s", path)
             continue
 
         # sku 컬럼이 없으면 채운다
@@ -84,11 +88,12 @@ def load_all_clauses(strategy="latest"):  # CHANGED: strategy 파라미터 추�
             df["polarity"] = df["polarity"].astype(str).str.lower()
 
         frames.append(df)
+        logger.info("Loaded %d clauses from %s", len(df), path.name)
 
     if not frames:
         return None
 
-    print(f"[INFO] Loaded {len(frames)} clause files.")  # CHANGED: 메시지 수정
+    logger.info("Loaded %d clause files", len(frames))
     return pd.concat(frames, ignore_index=True)
 
 
@@ -109,7 +114,7 @@ def compute_facet_bucket_stats(df):
     required = ["facet_bucket", "clause", "review_id", "sku"]
     for col in required:
         if col not in neg.columns:
-            print(f"[WARN] required column '{col}' missing; stats may be incomplete.")
+            logger.warning("required column '%s' missing; stats may be incomplete.", col)
 
     facet_bucket_col = "facet_bucket" if "facet_bucket" in neg.columns else None
 
@@ -149,7 +154,7 @@ def compute_facet_bucket_stats(df):
 
     out_path = ANALYSIS_DIR / "facet_bucket_stats.csv"
     stats.to_csv(out_path, index=False)
-    print(f"saved {out_path}")
+    logger.info("Saved facet_bucket_stats → %s (shape=%s)", out_path, stats.shape)
 
 
 def compute_facet_vs_bucket_cross(df):
@@ -171,7 +176,7 @@ def compute_facet_vs_bucket_cross(df):
 
     for col in ["facet_top1", "facet_bucket"]:
         if col not in neg.columns:
-            print(f"[WARN] '{col}' missing; cross-tab may be incomplete.")
+            logger.warning("'%s' missing; cross-tab may be incomplete.", col)
 
     req = [category_col, "sku", "facet_top1", "facet_bucket"]
     for col in req:
@@ -186,7 +191,7 @@ def compute_facet_vs_bucket_cross(df):
 
     out_path = ANALYSIS_DIR / "facet_vs_bucket_cross.csv"
     cross.to_csv(out_path, index=False)
-    print(f"saved {out_path}")
+    logger.info("Saved facet_vs_bucket_cross → %s (shape=%s)", out_path, cross.shape)
 
 
 def compute_bucket_samples(df, samples_per_combo=50, random_state=42):
@@ -230,13 +235,15 @@ def compute_bucket_samples(df, samples_per_combo=50, random_state=42):
         )
 
     if not sampled_frames:
-        print("no samples to save")
+        logger.warning("No samples to save")
         return
 
     samples_df = pd.concat(sampled_frames, ignore_index=True)
     out_path = ANALYSIS_DIR / "bucket_example_samples.csv"
     samples_df.to_csv(out_path, index=False)
-    print(f"saved {out_path}")
+    logger.info(
+        "Saved bucket_example_samples → %s (shape=%s)", out_path, samples_df.shape
+    )
 
 
 def main():  # CHANGED: argparse 적용 및 strategy 전달
@@ -249,16 +256,26 @@ def main():  # CHANGED: argparse 적용 및 strategy 전달
     )
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    t0 = time.perf_counter()
+    logger.info("Started facet quality analysis with strategy=%s", args.strategy)
 
     df = load_all_clauses(strategy=args.strategy)
     if df is None:
-        print("No data loaded.")
+        logger.warning("No data loaded.")
         return
 
     compute_facet_bucket_stats(df)
     compute_facet_vs_bucket_cross(df)
     compute_bucket_samples(df, samples_per_combo=50)
+
+    elapsed = time.perf_counter() - t0
+    logger.info("Finished facet quality analysis in %.1f seconds", elapsed)
 
 
 if __name__ == "__main__":

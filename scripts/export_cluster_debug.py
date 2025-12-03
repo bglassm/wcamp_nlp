@@ -3,11 +3,16 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import logging
+import time
 from collections import Counter
 from pathlib import Path
 from typing import Iterable, List
 
 import pandas as pd
+
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -91,15 +96,28 @@ def _facet_top1_mode(series: pd.Series):
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    t0 = time.perf_counter()
+
     args = _parse_args()
+    logger.info("Started exporting cluster_debug with pattern=%r and output=%s", args.input_glob, args.output)
+
     files = sorted(glob.glob(args.input_glob))
+    logger.info("Discovered %d clustered clause workbooks matching %r", len(files), args.input_glob)
     if not files:
+        logger.warning("No input files matched pattern %r", args.input_glob)
         raise SystemExit(f"No files matched pattern: {args.input_glob}")
 
     records = []
-    for file_path in files:
+    for idx, file_path in enumerate(files, start=1):
         path = Path(file_path)
+        logger.info("Processing file %d/%d: %s", idx, len(files), path)
         df = _load_clauses(path)
+        logger.info("Loaded %d clauses from %s", len(df), path)
         sku = path.stem.split("_")[0] if path.stem else path.parent.name
 
         for (polarity, cluster_label), group in df.groupby(["polarity", "cluster_label"]):
@@ -121,10 +139,13 @@ def main() -> None:
             records.append(record)
 
     out_df = pd.DataFrame(records)
+    logger.info("Aggregated cluster_debug with shape=%s", out_df.shape)
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_df.to_csv(out_path, index=False)
-    print(f"Saved cluster_debug CSV → {out_path} ({len(out_df)} rows)")
+    logger.info("Saved cluster_debug CSV → %s (%d rows)", out_path, len(out_df))
+    elapsed = time.perf_counter() - t0
+    logger.info("Finished exporting cluster_debug (%d rows) in %.1f seconds", len(out_df), elapsed)
 
 
 if __name__ == "__main__":
