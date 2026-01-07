@@ -1,11 +1,15 @@
 import argparse  # NEW: CLI 인자 파싱 추가
 import logging  # NEW: INFO 로깅 추가
 import time
+from datetime import datetime
 from pathlib import Path
 import pandas as pd
 
-# 분석 결과를 모아둘 폴더: output/analysis
-ANALYSIS_DIR = Path("output") / "analysis"
+RUN_DATE = datetime.now().strftime("%Y%m%d")
+
+# 분석 결과를 모아둘 폴더: output/<YYYYMMDD>/analysis
+OUTPUT_ROOT = Path("output") / RUN_DATE
+ANALYSIS_DIR = OUTPUT_ROOT / "analysis"
 ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
 
 logger = logging.getLogger(__name__)  # NEW: INFO 로깅용 로거
@@ -28,12 +32,12 @@ def _select_latest_file(files):  # NEW: 타임스탬프 우선, 실패 시 mtime
 
 def load_all_clauses(strategy="latest"):  # CHANGED: strategy 파라미터 추가
     """
-    output/<sku>/<sku>_clauses_clustered_*.xlsx 파일을 모아 DataFrame을 만듭니다.
+    output/<YYYYMMDD>/<sku>/<sku>_clauses_clustered_*.xlsx 파일을 모아 DataFrame을 만듭니다.
 
     strategy="latest" → sku별 최신 파일 1개만 사용 (기본값)
     strategy="all" → sku별 모든 clustered 파일 사용
     """
-    base = Path("output")
+    base = OUTPUT_ROOT
     clause_files = []
 
     # sku 디렉토리 순회
@@ -103,7 +107,7 @@ def compute_facet_bucket_stats(df):
       - n_clauses
       - n_reviews
       - share_of_sku (해당 sku negative 절 중 비율)
-    을 계산해서 output/analysis/facet_bucket_stats.csv 로 저장합니다.
+    을 계산해서 output/<YYYYMMDD>/analysis/facet_bucket_stats.csv 로 저장합니다.
     """
     # 우선 negative만 본다
     if "polarity" in df.columns:
@@ -160,7 +164,7 @@ def compute_facet_bucket_stats(df):
 def compute_facet_vs_bucket_cross(df):
     """
     category/sku/facet_top1/facet_bucket 조합별 절 수를 세서
-    output/analysis/facet_vs_bucket_cross.csv 로 저장합니다.
+    output/<YYYYMMDD>/analysis/facet_vs_bucket_cross.csv 로 저장합니다.
     → semantic facet_top1은 freshness/size_quantity 등,
       facet_bucket은 freshness_negative/unmatched_negative 같은 값.
     """
@@ -198,7 +202,7 @@ def compute_bucket_samples(df, samples_per_combo=50, random_state=42):
     """
     각 (category, sku, facet_top1, facet_bucket) 조합마다
     최대 samples_per_combo개씩 절을 샘플링해서
-    output/analysis/bucket_example_samples.csv 로 저장합니다.
+    output/<YYYYMMDD>/analysis/bucket_example_samples.csv 로 저장합니다.
 
     → 여기 들어있는 문장들을 가지고 YAML facet 키워드를 튜닝할 수 있습니다.
     """

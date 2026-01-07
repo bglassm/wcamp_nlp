@@ -411,12 +411,17 @@ def run_full_pipeline(
             connectives=config.CLAUSE_CONNECTIVES,
             id_col=config.REVIEW_ID_COL,
         )
+        fallback_clause_count = 0
+        if "clause_source" in clause_df.columns:
+            fallback_clause_count = int((clause_df["clause_source"] == "fallback_review").sum())
+        logging.info("      [LOSSLESS] fallback clauses created: %d", fallback_clause_count)
         logging.info("      → split_clauses done (%d clauses, %.1fs)", len(clause_df), time.time() - t0)
 
         # 1.6) ABSA
         t0 = time.time()
         logging.info("   1.6) Running ABSA on clauses (batch_size=%d)…", config.ABSA_BATCH_SIZE)
-        absa_cache = out_dir / "cache" / f"{stem_effective}_absa.csv.gz"
+        cache_root = Path(getattr(config, "OUTPUT_DIR", "output")) / "cache"
+        absa_cache = cache_root / f"{stem_effective}_absa.csv.gz"
         absa_cache.parent.mkdir(parents=True, exist_ok=True)
         if resume and absa_cache.exists():
             logging.info(" 1.6) Using ABSA cache → %s", absa_cache)
@@ -434,6 +439,22 @@ def run_full_pipeline(
             except Exception:
                 pass
         logging.info("      ▶ [DEBUG] ABSA polarity counts: %s", absa_df["polarity"].value_counts().to_dict())
+        if not absa_df.empty:
+            pol_series = absa_df["polarity"].astype(str).str.lower().str.strip()
+            conf_series = pd.to_numeric(absa_df["confidence"], errors="coerce")
+            valid_pols = {"negative", "neutral", "positive"}
+            missing_pol = pol_series.isna() | pol_series.eq("") | ~pol_series.isin(valid_pols)
+            low_conf = conf_series.isna() | (conf_series < config.ABSA_CONFIDENCE_THRESHOLD)
+            sentiment_fallback = missing_pol | low_conf
+            absa_df["polarity"] = np.where(sentiment_fallback, "neutral", pol_series)
+            absa_df["confidence"] = conf_series
+            absa_df["sentiment_fallback"] = sentiment_fallback
+            logging.info(
+                "      [LOSSLESS] neutral clauses preserved (missing/low-confidence sentiment): %d",
+                int(sentiment_fallback.sum()),
+            )
+        else:
+            absa_df["sentiment_fallback"] = []
 
         # --- 누적 버퍼 ---
         combined_clause_df_list: List[pd.DataFrame] = []
@@ -445,10 +466,11 @@ def run_full_pipeline(
             acc_rows = sum(d.shape[0] for d in combined_clause_df_list)
             logging.info("   [ACC] accumulated clauses so far: %d", acc_rows)
 
-            sub_df = absa_df[
-                (absa_df["polarity"] == pol) &
-                (absa_df["confidence"] >= config.ABSA_CONFIDENCE_THRESHOLD)
-            ].reset_index(drop=True)
+            if pol == "neutral":
+                sub_df = absa_df[absa_df["polarity"] == pol].reset_index(drop=True)
+            else:
+                conf_ok = absa_df["confidence"].fillna(-1) >= config.ABSA_CONFIDENCE_THRESHOLD
+                sub_df = absa_df[(absa_df["polarity"] == pol) & conf_ok].reset_index(drop=True)
             logging.info("   ▶ [%s] %d/%d clauses selected (thr=%.2f)",
                          pol, len(sub_df), len(absa_df), config.ABSA_CONFIDENCE_THRESHOLD)
             if sub_df.empty:
@@ -677,6 +699,9 @@ def run_full_pipeline(
 
         logging.info("   [CHECK] combined_clause_df cols=%s", sorted(list(combined_clause_df.columns)))
         total_rows = len(combined_clause_df)
+        if "facet_top1" in combined_clause_df.columns:
+            unrouted_mask = combined_clause_df["facet_top1"].astype(str).str.strip().str.lower() == "unrouted"
+            logging.info("   [LOSSLESS] unrouted facet clauses preserved: %d", int(unrouted_mask.sum()))
         if has_f1:
             non_null = int(combined_clause_df["facet_top1"].notna().sum())
             non_blank = int(
@@ -811,9 +836,13 @@ def main() -> None:
 
         return _Wrapper()
 
+    run_date = datetime.now().strftime("%Y%m%d")
+    output_root = Path(args.output_dir)
+    run_output_root = output_root / run_date
+
     # 로깅
     timestamp = datetime.now().strftime("%y%m%d_%H%M%S")
-    log_dir = Path(getattr(config, "OUTPUT_DIR", "output")) / "logs"
+    log_dir = run_output_root / "logs"
     log_dir.mkdir(exist_ok=True, parents=True)
     log_path = log_dir / f"clause_pipeline_{timestamp}.log"
     logging.basicConfig(
@@ -824,14 +853,15 @@ def main() -> None:
         force=True
     )
     logging.captureWarnings(True)
+    logging.info("Run output root: %s", run_output_root.as_posix())
 
     # 매니페스트
-    write_run_manifest(Path(getattr(config, "OUTPUT_DIR", "output")) / "run_manifest.json", config_obj=config)
+    write_run_manifest(run_output_root / "run_manifest.json", config_obj=config)
 
     # 입력 준비
     files_to_run: List[Path] = list(args.files)
     aliases: List[str] | None = None
-    final_output_dir = args.output_dir
+    final_output_dir = run_output_root
 
     # community_filtered 모드(요약→관련성→임시 입력)
     if args.mode == "community_filtered":
@@ -916,7 +946,7 @@ def main() -> None:
         if kept_df.empty:
             raise SystemExit(f"[community_filtered] 관련성 임계 통과 문장이 없습니다. (tau={args.rel_tau}, alias_tau={args.alias_tau})")
 
-        out_root = Path(args.output_dir) / f"{product}_community"
+        out_root = run_output_root / f"{product}_community"
         out_root.mkdir(parents=True, exist_ok=True)
         tmp_input = out_root / "community_kept_input.xlsx"
         kept_df.to_excel(tmp_input, index=False)
@@ -963,7 +993,7 @@ def main() -> None:
             logging.info(f"▶ [AUTO] Review run → {name}")
             run_full_pipeline(
                 [f],
-                args.output_dir,
+                run_output_root,
                 resume=args.resume,
                 facets_path_override=facets_path,
                 thresholds_path_override=thres_path,
@@ -1059,7 +1089,7 @@ def main() -> None:
                     logging.warning(f"[auto] 필터 통과 문장 없음 → {f.name}, skip")
                     continue
 
-                out_root = Path(args.output_dir) / f"{product}_community"
+                out_root = run_output_root / f"{product}_community"
                 out_root.mkdir(parents=True, exist_ok=True)
                 tmp_input = out_root / "community_kept_input.xlsx"
                 kept_df.to_excel(tmp_input, index=False)
@@ -1108,7 +1138,7 @@ def main() -> None:
     # 표준 절-단위 파이프라인 실행
     run_full_pipeline(
         files_to_run,
-        (final_output_dir if args.mode == "community_filtered" else args.output_dir),
+        (final_output_dir if args.mode == "community_filtered" else run_output_root),
         resume=args.resume,
         facets_path_override=args.facets,
         thresholds_path_override=args.thresholds,

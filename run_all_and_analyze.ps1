@@ -24,10 +24,12 @@ Write-Host "=== [1/4] Running main pipeline (main.py) ==="
 python main.py
 
 Write-Host "=== [2/4] Searching latest run tag ==="
-$clusterFiles = Get-ChildItem -Recurse -Path "output" -Filter "*_clauses_clustered_*.xlsx"
+$runDate = Get-Date -Format "yyyyMMdd"
+$outputRoot = "output/$runDate"
+$clusterFiles = Get-ChildItem -Recurse -Path $outputRoot -Filter "*_clauses_clustered_*.xlsx"
 
 if (-not $clusterFiles) {
-    Write-Error "No clustered XLSX files found under output/. Check main.py results."
+    Write-Error "No clustered XLSX files found under $outputRoot. Check main.py results."
     exit 1
 }
 
@@ -47,13 +49,13 @@ if (-not $runTags) {
 $latestRunTag = ($runTags | Sort-Object)[-1]
 Write-Host ("Latest run tag detected: {0}" -f $latestRunTag)
 
-$analysisDir = "output/analysis_$latestRunTag"
+$analysisDir = "$outputRoot/analysis_$latestRunTag"
 if (-not (Test-Path $analysisDir)) {
     New-Item -ItemType Directory -Path $analysisDir | Out-Null
 }
 
 Write-Host "=== [3/4] Generating cluster_debug CSV ==="
-$inputGlob = "output/*/*_clauses_clustered_${latestRunTag}.xlsx"
+$inputGlob = "$outputRoot/*/*_clauses_clustered_${latestRunTag}.xlsx"
 $clusterDebugPath = "$analysisDir/cluster_debug_${latestRunTag}.csv"
 
 python scripts/export_cluster_debug.py `
@@ -64,9 +66,9 @@ Write-Host "=== [4/4] Running facet quality analysis (latest) ==="
 python scripts/analyze_facet_quality.py --strategy latest
 
 # Copy analysis outputs into run-specific directory
-$bucketSamples = "output/bucket_example_samples.csv"
-$facetStats    = "output/facet_bucket_stats.csv"
-$facetCross    = "output/facet_vs_bucket_cross.csv"
+$bucketSamples = "$outputRoot/analysis/bucket_example_samples.csv"
+$facetStats    = "$outputRoot/analysis/facet_bucket_stats.csv"
+$facetCross    = "$outputRoot/analysis/facet_vs_bucket_cross.csv"
 
 if (Test-Path $bucketSamples) {
     Copy-Item $bucketSamples "$analysisDir/bucket_example_samples_${latestRunTag}.csv" -Force

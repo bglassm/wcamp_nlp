@@ -791,6 +791,18 @@ def apply_facet_routing(
         buckets.append(bucket)
     out["facet_bucket"] = buckets
 
+    # ---------------------------------------------------------------
+    # Lossless fallback for unrouted clauses
+    # ---------------------------------------------------------------
+    blank_top1 = out["facet_top1"].astype(str).str.strip().isin(["", "nan", "none", "None"])
+    unrouted_mask = out["facet_top1"].isna() | blank_top1
+    if unrouted_mask.any():
+        out.loc[unrouted_mask, "facet_top1"] = "unrouted"
+        pol_series = out.get("polarity", pd.Series(["unknown"] * len(out), index=out.index))
+        pol_norm = pol_series.apply(_normalize_polarity)
+        bucket_series = pol_norm.apply(lambda p: f"{p}_unrouted" if p and p != "unknown" else "unrouted")
+        out.loc[unrouted_mask, "facet_bucket"] = bucket_series.loc[unrouted_mask]
+
     non_empty_final = out["facet_ids"].apply(lambda v: bool(v)).sum()
     unmatched_final = out["facet_bucket"].astype(str).str.startswith("unmatched_").sum()
     logger.info(

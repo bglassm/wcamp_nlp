@@ -262,10 +262,16 @@ def split_clauses(
     if not smart:
         # Fallback: simple kss-only splitting per sentence (no clause-level split)
         for rid, text in zip(df[id_col].tolist(), df[text_col].astype(str).tolist()):
+            text = (text or "").strip()
+            if not text:
+                continue
+            start = len(rows)
             for s in kss.split_sentences(text):
                 s = s.strip()
                 if s:
-                    rows.append({"review_id": rid, "clause": s})
+                    rows.append({id_col: rid, "clause": s, "clause_source": "segment"})
+            if len(rows) == start:
+                rows.append({id_col: rid, "clause": text, "clause_source": "fallback_review"})
         return pd.DataFrame(rows)
 
     # Smart path
@@ -274,8 +280,11 @@ def split_clauses(
         text = (text or "").strip()
         if not text:
             continue
+        start = len(rows)
         for clause in _greedy_segment(text, max_splits=getattr(config, "SMART_SPLIT_MAX_SPLITS_PER_SENT", 3)):
             if clause:
-                rows.append({"review_id": rid, "clause": clause})
+                rows.append({id_col: rid, "clause": clause, "clause_source": "segment"})
+        if len(rows) == start:
+            rows.append({id_col: rid, "clause": text, "clause_source": "fallback_review"})
 
     return pd.DataFrame(rows)

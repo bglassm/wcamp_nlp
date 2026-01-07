@@ -20,7 +20,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--input_glob",
         required=True,
-        help="Glob pattern for *_clauses_clustered_*.xlsx files (e.g., output/<SKU>/*_clauses_clustered_*.xlsx)",
+        help="Glob pattern for *_clauses_clustered_*.xlsx files (e.g., output/<YYYYMMDD>/<SKU>/*_clauses_clustered_*.xlsx)",
     )
     parser.add_argument("--output", required=True, help="Output CSV path for the aggregated debug view.")
     return parser.parse_args()
