@@ -57,8 +57,8 @@ buckets:
 
   - id: package_delivery
     name: package_delivery
-    desc: 포장/냉매/누수/파손/배송(포장 상태와 배송 품질 전반, generic용 id)
+    desc: 포장/냉매/누수/파손/배송 등 물류 품질(맛·식감·신선도 자체만 언급되면 제외)
 
   - id: packaging_delivery
     name: packaging_delivery
-    desc: 포장/냉매/누수/파손/배송(포장·배송 전반, 카테고리별 facets에서 사용하는 id)
+    desc: 포장/냉매/누수/파손/배송 등 물류 품질(맛·식감·신선도 자체만 언급되면 제외)
