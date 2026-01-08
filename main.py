@@ -5,6 +5,8 @@ import warnings
 import logging
 import sys
 import os
+import hashlib
+import re
 from pathlib import Path
 from typing import List, Dict
 from datetime import datetime
@@ -33,7 +35,7 @@ except Exception:
 
 import config
 from pipeline.loader import load_reviews
-from pipeline.preprocess import preprocess_reviews
+from pipeline.preprocess import preprocess_reviews, clean_review_text
 from pipeline.clause_splitter import split_clauses
 from pipeline.absa import classify_clauses
 from pipeline.embedder import get_embedder, CachingEmbedder, _get_model # embed_reviews is now deprecated
@@ -112,6 +114,15 @@ def _ensure_facet_top1(df: pd.DataFrame, *, default: str | None = None) -> pd.Da
         out.loc[mask_blank, "facet_top1"] = None
         return out
     return df.assign(facet_top1=default)
+
+def _normalize_review_text(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+def _hash_text(text: str) -> str:
+    return hashlib.md5(text.encode("utf-8", "ignore")).hexdigest()
+
+def _has_korean(text: str) -> bool:
+    return bool(re.search(r"[가-힣]", text or ""))
 
 # --- 유틸: 다양한 facets YAML 스키마를 표준 스키마로 정규화 ---
 def _load_facets_forgiving(facets_path: Path, facet_embedder):
@@ -290,6 +301,7 @@ def run_full_pipeline(
     thresholds_path_override: str | None = None,
     alias_terms: List[str] | None = None,
     save_stem: str | None = None,
+    audit_root: Path | None = None,
 ) -> None:
     total = len(input_files)
     logging.info("▶ Starting full pipeline for %d files", total)
@@ -365,6 +377,9 @@ def run_full_pipeline(
 
     refine_enabled = refine_enabled_cfg and refine_enabled and (facets_obj is not None)
 
+    audit_dir = audit_root or (output_dir / "audit")
+    audit_dir.mkdir(parents=True, exist_ok=True)
+
     # --- 파일 루프 ---
     for idx, file_path in enumerate(input_files, start=1):
         logging.info("🔄 [%d/%d] Processing %s", idx, total, file_path.name)
@@ -383,7 +398,6 @@ def run_full_pipeline(
         logging.info("   1) Loading & preprocessing reviews…")
 
         df = load_reviews(file_path)
-        df = preprocess_reviews(df)
 
         if df.columns.duplicated().any():
             df = df.loc[:, ~df.columns.duplicated()]
@@ -400,6 +414,85 @@ def run_full_pipeline(
         if rid_col not in df.columns:
             df = df.reset_index(drop=False).rename(columns={"index": rid_col})
         df[rid_col] = df[rid_col].astype(str)
+
+        raw_reviews = df["review"].astype(str).fillna("")
+        clean_reviews = raw_reviews.map(clean_review_text)
+        raw_len = raw_reviews.str.len()
+        clean_len = clean_reviews.str.len()
+        norm_text = clean_reviews.map(_normalize_review_text)
+        norm_hash = norm_text.map(_hash_text)
+        dup_count = norm_text.map(norm_text.value_counts())
+
+        audit_base = pd.DataFrame({
+            rid_col: df[rid_col],
+            "__raw_review": raw_reviews,
+            "__clean_review": clean_reviews,
+            "__raw_len": raw_len,
+            "__clean_len": clean_len,
+            "__norm_hash": norm_hash,
+            "__dup_count": dup_count,
+        })
+        audit_lookup = audit_base.set_index(rid_col, drop=False)
+        drop_records: Dict[str, dict] = {}
+
+        def _record_drop(mask: pd.Series, stage: str, reason: str) -> None:
+            idxs = audit_base.index[mask]
+            for i in idxs:
+                rid = str(audit_base.at[i, rid_col])
+                if rid in drop_records:
+                    continue
+                drop_records[rid] = {
+                    "review_id": rid,
+                    "raw_len": int(audit_base.at[i, "__raw_len"]),
+                    "cleaned_len": int(audit_base.at[i, "__clean_len"]),
+                    "drop_stage": stage,
+                    "drop_reason": reason,
+                    "norm_hash": audit_base.at[i, "__norm_hash"],
+                    "raw_preview": str(audit_base.at[i, "__raw_review"])[:120],
+                }
+
+        def _record_drop_by_ids(ids: set[str], stage: str, reason: str) -> None:
+            for rid in ids:
+                rid_str = str(rid)
+                if rid_str in drop_records:
+                    continue
+                if rid_str not in audit_lookup.index:
+                    continue
+                row = audit_lookup.loc[rid_str]
+                if isinstance(row, pd.DataFrame):
+                    row = row.iloc[0]
+                drop_records[rid_str] = {
+                    "review_id": rid_str,
+                    "raw_len": int(row["__raw_len"]),
+                    "cleaned_len": int(row["__clean_len"]),
+                    "drop_stage": stage,
+                    "drop_reason": reason,
+                    "norm_hash": row["__norm_hash"],
+                    "raw_preview": str(row["__raw_review"])[:120],
+                }
+
+        min_len = 0
+        require_korean = bool(getattr(config, "REVIEW_REQUIRE_KOREAN", False))
+        min_len_mask = pd.Series(True, index=df.index)
+        korean_mask = raw_reviews.map(_has_korean) if require_korean else pd.Series(True, index=df.index)
+        load_keep_mask = min_len_mask & korean_mask
+
+        if min_len > 0:
+            _record_drop(~min_len_mask, "load", "load_filtered_min_len")
+        if require_korean:
+            _record_drop(min_len_mask & ~korean_mask, "load", "load_filtered_non_korean")
+
+        preprocess_mask = load_keep_mask.copy()
+        empty_mask = preprocess_mask & clean_len.eq(0)
+        _record_drop(empty_mask, "preprocess", "empty_after_clean")
+
+        keep_mask = preprocess_mask & ~empty_mask
+        df = df.loc[keep_mask].copy()
+        df["review"] = clean_reviews.loc[keep_mask].values
+        df["dup_count"] = dup_count.loc[keep_mask].astype(int).values
+        df["n_reviews_total"] = int(keep_mask.sum())
+        df = df.reset_index(drop=True)
+        input_review_ids = audit_base[rid_col].astype(str).tolist()
 
         logging.info("      → Loaded %d reviews (%.1fs)", len(df), time.time() - t0)
 
@@ -455,6 +548,36 @@ def run_full_pipeline(
             )
         else:
             absa_df["sentiment_fallback"] = []
+
+        absa_rid_col = rid_col if rid_col in absa_df.columns else "review_id"
+        absa_ids = set(absa_df[absa_rid_col].astype(str)) if not absa_df.empty else set()
+        post_preprocess_ids = set(df[rid_col].astype(str))
+        missing_after_absa = post_preprocess_ids - absa_ids
+        _record_drop_by_ids(missing_after_absa, "absa_join", "join_missing_after_absa")
+
+        def _write_audit_files(kept_ids: set[str]) -> None:
+            missing_ids = set(input_review_ids) - kept_ids - set(drop_records.keys())
+            _record_drop_by_ids(missing_ids, "exception", "other_exception")
+            dropped_ids = [rid for rid in input_review_ids if rid in drop_records and rid not in kept_ids]
+            dropped_rows = [drop_records[rid] for rid in dropped_ids]
+            dropped_cols = [
+                "review_id",
+                "raw_len",
+                "cleaned_len",
+                "drop_stage",
+                "drop_reason",
+                "norm_hash",
+                "raw_preview",
+            ]
+            input_path = audit_dir / f"{stem_effective}_input_review_ids.csv"
+            kept_path = audit_dir / f"{stem_effective}_kept_review_ids.csv"
+            dropped_path = audit_dir / f"{stem_effective}_dropped_reviews.csv"
+            pd.DataFrame({rid_col: input_review_ids}).to_csv(input_path, index=False)
+            pd.DataFrame({rid_col: [rid for rid in input_review_ids if rid in kept_ids]}).to_csv(
+                kept_path,
+                index=False,
+            )
+            pd.DataFrame(dropped_rows, columns=dropped_cols).to_csv(dropped_path, index=False)
 
         # --- 누적 버퍼 ---
         combined_clause_df_list: List[pd.DataFrame] = []
@@ -674,6 +797,9 @@ def run_full_pipeline(
             combined_kw.update(kw_off)
 
         if not combined_clause_df_list:
+            missing_before_export = absa_ids
+            _record_drop_by_ids(missing_before_export, "export_join", "join_missing_before_export")
+            _write_audit_files(set())
             logging.info("   ⏭️ No clauses passed threshold for any polarity — nothing to save.")
             logging.info("✅ Completed %s (%d/%d)\n", stem_effective, idx, total)
             continue
@@ -724,6 +850,11 @@ def run_full_pipeline(
                 state_path=out_dir / "_stable_ids.json",
                 prefer_col="refined_cluster_id",
             )
+
+        final_ids = set(combined_clause_df[rid_col].astype(str))
+        missing_before_export = absa_ids - final_ids
+        _record_drop_by_ids(missing_before_export, "export_join", "join_missing_before_export")
+        _write_audit_files(final_ids)
 
         save_clustered_clauses(
             clause_df=combined_clause_df,
@@ -999,6 +1130,7 @@ def main() -> None:
                 thresholds_path_override=thres_path,
                 alias_terms=None,
                 save_stem=None,
+                audit_root=run_output_root / "audit",
             )
 
         # 커뮤니티 전량
@@ -1130,6 +1262,7 @@ def main() -> None:
                     thresholds_path_override=thres_path,
                     alias_terms=aliases,
                     save_stem=f"{product}_community",
+                    audit_root=run_output_root / "audit",
                 )
 
         logging.info("🎉 AUTO: review + community 전체 실행 완료")
@@ -1143,6 +1276,7 @@ def main() -> None:
         facets_path_override=args.facets,
         thresholds_path_override=args.thresholds,
         alias_terms=(aliases if args.mode == "community_filtered" else None),
+        audit_root=run_output_root / "audit",
     )
 
 if __name__ == "__main__":
