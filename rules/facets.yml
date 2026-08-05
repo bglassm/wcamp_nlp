@@ -1,22 +1,64 @@
 buckets:
-- id: sweetness
-  name: sweetness
-  desc: 단맛/당도 전반(무맛/싱거움 포함)
-- id: texture
-  name: texture
-  desc: 식감 전반(아삭/퍼석/질김/무름/단단 등)
-- id: appearance
-  name: appearance
-  desc: 외관/표면/색/형태(깨짐/흠집/멍 등)
-- id: freshness
-  name: freshness
-  desc: 신선도/숙성도/이취(미숙/과숙/상함/비린내 등)
-- id: size_quantity
-  name: size_quantity
-  desc: 크기/중량/개수/양
-- id: price
-  name: price
-  desc: 가격/가성비
-- id: package_delivery
-  name: package_delivery
-  desc: 포장/냉매/누수/파손/배송
+  - id: taste
+    name: taste
+    desc: 맛 전반(단맛/짠맛/맵기/무맛/맹맛/풍미 등 전반적인 맛 품질)
+
+  - id: sweetness
+    name: sweetness
+    desc: 단맛/당도 전반(무맛/싱거움/맹맛 포함한 당도 관련 평가)
+
+  - id: texture
+    name: texture
+    desc: 식감 전반(아삭함/퍼석함/질김/무름/단단함 등 식감 관련 품질)
+
+  - id: appearance
+    name: appearance
+    desc: 외관/표면/색/형태(깨짐/흠집/멍/변색 등 보이는 상태 전반)
+
+  - id: freshness
+    name: freshness
+    desc: 신선도/숙성도/이취(미숙/과숙/상함/비린내/냉동 느낌 등 전반적인 신선도)
+
+  - id: ripeness
+    name: ripeness
+    desc: 익은 정도/숙성도(덜 익음/과숙/적정 숙성 등 익은 상태에 대한 평가)
+
+  - id: aroma
+    name: aroma
+    desc: 향/냄새(과일 향/고소한 향/비린내/잡내/냄새 없음 등 향 관련 품질)
+
+  - id: prep_state
+    name: prep_state
+    desc: 손질/전처리 상태(손질 여부/내장 제거/가시 제거/손질 불량 등 조리 편의성)
+
+  - id: size_quantity
+    name: size_quantity
+    desc: 크기/중량/개수/양 전반(알 크기, 포장 단위, 양이 많고 적음 등)
+
+  - id: size_weight
+    name: size_weight
+    desc: 개체당 크기/중량(특히 해산물·육류의 한 마리/한 조각 크기와 무게)
+
+  - id: size_weight_diff
+    name: size_weight_diff
+    desc: 기대·표기 대비 크기/중량 차이(설명/사진과 실제 크기·무게가 다른 경우)
+
+  - id: size
+    name: size
+    desc: 단순 크기 평가(크다/작다/너무 작다 등 전반적인 크기 인식)
+
+  - id: thickness_size_weight
+    name: thickness_size_weight
+    desc: 두께/크기/중량(특히 고기류 두께, 한 덩이의 볼륨감 등)
+
+  - id: price
+    name: price
+    desc: 가격/가성비(비싸다/싸다/가성비 좋다/이 가격에 이 퀄리티 등 가격 만족도)
+
+  - id: package_delivery
+    name: package_delivery
+    desc: 포장/냉매/누수/파손/배송 등 물류 품질(맛·식감·신선도 자체만 언급되면 제외)
+
+  - id: packaging_delivery
+    name: packaging_delivery
+    desc: 포장/냉매/누수/파손/배송 등 물류 품질(맛·식감·신선도 자체만 언급되면 제외)

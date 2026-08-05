@@ -55,7 +55,7 @@ def assign_stable_ids(
     """Attach `stable_cluster_id` based on persisted signature→id mapping.
     - prefer_col: use refined ids if present; else fallback to `cluster_label`.
     - skips "other" bins (x999) by reusing the same id.
-    - persists state per input file at `state_path` (e.g., output/<stem>/_stable_ids.json).
+    - persists state per input file at `state_path` (e.g., output/<YYYYMMDD>/<stem>/_stable_ids.json).
     """
     df = clauses_df.copy()
     col = prefer_col if prefer_col in df.columns else "cluster_label"

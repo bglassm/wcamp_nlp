@@ -17,7 +17,6 @@ _ALIAS_MAP = {
     "content": "review",
 }
 
-
 def load_reviews(
     filepath: Union[str, Path]
 ) -> pd.DataFrame:

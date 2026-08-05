@@ -9,9 +9,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 import config
 from pipeline.embedder import _get_model
 
-# Quieter logger
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.WARNING)
 
 # SBERT model cache
 _MODEL_CACHE: Dict[str, object] = {}
@@ -80,10 +78,43 @@ def _centroids_from_reps(
     return cluster_ids, centroids, pruned
 
 
+def _resolve_merge_semantic_params(model_override: Optional[str] = None) -> Tuple[str, Optional[str]]:
+    """Resolve the SBERT model/device to use for merging."""
+
+    model_name = model_override
+    device = None
+
+    merge_cfg = getattr(config, "merge", None)
+    if not model_name and merge_cfg and getattr(merge_cfg, "semantic_model", None):
+        model_name = merge_cfg.semantic_model
+    if merge_cfg and getattr(merge_cfg, "device", None):
+        device = merge_cfg.device
+
+    semantic_cfg = getattr(config, "semantic", None)
+    if not model_name and semantic_cfg and getattr(semantic_cfg, "model", None):
+        model_name = semantic_cfg.model
+    if not device and semantic_cfg and getattr(semantic_cfg, "device", None):
+        device = semantic_cfg.device
+
+    if not model_name:
+        model_name = "jhgan/ko-sbert-sts"
+    device = device or getattr(config, "DEVICE", None)
+    return model_name, device
+
+
+def _no_merge_result(reps: Dict[Union[int, str], List[str]]):
+    merge_map: Dict[str, int] = {}
+    merged_reps: Dict[int, List[str]] = {}
+    for idx, cid in enumerate(reps.keys()):
+        merge_map[str(_as_int_if_possible(cid))] = idx
+        merged_reps[idx] = reps[cid]
+    return merge_map, merged_reps, []
+
+
 def merge_similar_clusters(
     reps: Dict[Union[int, str], List[str]],
     *,
-    model_name: str = config.MODEL_NAME,
+    model_name: Optional[str] = None,
     threshold: Optional[float] = config.CLUSTER_MERGE_THRESHOLD,
     save_candidates_path: Union[str, Path, None] = None,
     topk_per_cluster: int = 3,
@@ -104,8 +135,9 @@ def merge_similar_clusters(
     ----------
     reps : dict[cluster_id, list[str]]
         Cluster → representative sentences.
-    model_name : str
-        SentenceTransformer model name (defaults to config.MODEL_NAME).
+    model_name : str | None
+        Optional override. If omitted, falls back to config.merge.semantic_model
+        (or config.semantic.model) so OpenAI embedding settings remain separate.
     threshold : float | None
         Cosine similarity cutoff to merge. If None and `dynamic_percentile` is set,
         a percentile-based threshold will be used.
@@ -133,10 +165,21 @@ def merge_similar_clusters(
     if not reps:
         return {}, {}, []
 
-    # 1) Load embedding model (cached)
-    if model_name not in _MODEL_CACHE:
-        _MODEL_CACHE[model_name] = _get_model(model_name, getattr(config, "DEVICE", None))
-    model = _MODEL_CACHE[model_name]
+    resolved_model_name, device = _resolve_merge_semantic_params(model_name)
+    logger.info("Merge semantic model: %s", resolved_model_name)
+    logger.info("Merge semantic device: %s", device or "auto")
+
+    cache_key = f"{resolved_model_name}@{device or 'auto'}"
+    if cache_key not in _MODEL_CACHE:
+        try:
+            _MODEL_CACHE[cache_key] = _get_model(resolved_model_name, device)
+        except Exception as exc:
+            logger.warning(
+                "Merge semantic model load failed (%s): %s", resolved_model_name, exc
+            )
+            logger.warning("Skipping similarity-based merges; falling back to identity mapping.")
+            return _no_merge_result(reps)
+    model = _MODEL_CACHE[cache_key]
 
     # 2) Build centroids from top-k reps
     cluster_ids, centroids, pruned_reps = _centroids_from_reps(reps, model, topk_per_cluster=topk_per_cluster)

@@ -1,44 +1,172 @@
 from pathlib import Path
+import logging
 import os as _os
+from typing import Dict, Optional, Union
 
-# ───────────────────────────────────────────────────────────────────────────
 # 0. Base paths
-# ───────────────────────────────────────────────────────────────────────────
 BASE_DIR   = Path(__file__).resolve().parent
 DATA_DIR   = BASE_DIR / "data"
 OUTPUT_DIR = BASE_DIR / "output"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+logger = logging.getLogger(__name__)
+
+# Category helpers
+
+CATEGORIES = ["fruit", "seafood", "veggie", "meat", "generic"]
+
+CATEGORY_DIR_MAP = {
+    "fruit":   ["fruit", "fruits"],
+    "seafood": ["seafood", "fish"],
+    "veggie":  ["veggie", "vegetable"],
+    "meat":    ["meat", "livestock"],
+}
+
+CATEGORY_OVERRIDES: Dict[str, str] = {}
+
+DEFAULT_CATEGORY = "generic"
+
+# 플랫폼 순서 (클라이언트 요구사항)
+PLATFORM_ORDER_SHOPPING = ["제타", "SSG", "네이버 스마트스토어", "지마켓", "컬리"]
+PLATFORM_ORDER_COMMUNITY = [
+    "인스티즈",
+    "엠엘비파크",
+    "뽐뿌",
+    "루리웹",
+    "네이트판",
+    "82쿡",
+    "네이버 블로그",
+]
+PLATFORM_ORDER = PLATFORM_ORDER_SHOPPING + PLATFORM_ORDER_COMMUNITY
+
+
+def infer_category(dataset_path: Union[str, Path], sku: Optional[str] = None) -> str:
+    """Infer category from dataset path or explicit overrides.
+
+    - Honors ``CATEGORY_OVERRIDES`` first when ``sku`` is provided.
+    - Matches directory tokens defined in ``CATEGORY_DIR_MAP`` against the
+      normalized dataset path.
+    - Falls back to ``DEFAULT_CATEGORY`` when no match is found.
+    """
+
+    if sku and sku in CATEGORY_OVERRIDES:
+        return CATEGORY_OVERRIDES[sku]
+
+    normalized_path = Path(dataset_path).as_posix().lower()
+    parts = {p.lower() for p in Path(normalized_path).parts}
+
+    for category, dir_names in CATEGORY_DIR_MAP.items():
+        for token in dir_names:
+            if token.lower() in parts:
+                return category
+
+    return DEFAULT_CATEGORY
 
 REVIEW_DATA_DIR     = DATA_DIR / "review"
 COMMUNITY_DATA_DIR  = DATA_DIR / "community"
 REVIEW_DATA_DIR.mkdir(parents=True, exist_ok=True)
 COMMUNITY_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-INPUT_FILES = sorted(
-    p for p in REVIEW_DATA_DIR.glob("*.xlsx")
-    if not p.name.startswith("~$")
-)
+FRUIT_DATA_DIR   = DATA_DIR / "fruit"
+SEAFOOD_DATA_DIR = DATA_DIR / "seafood"
+VEGGIE_DATA_DIR  = DATA_DIR / "veggie"
+MEAT_DATA_DIR    = DATA_DIR / "meat"
 
-# ───────────────────────────────────────────────────────────────────────────
+SEARCH_ROOTS = [
+    REVIEW_DATA_DIR,
+    FRUIT_DATA_DIR,
+    SEAFOOD_DATA_DIR,
+    VEGGIE_DATA_DIR,
+    MEAT_DATA_DIR,
+]
+
+candidates = []
+for root in SEARCH_ROOTS:
+    if root.exists():
+        candidates.extend(
+            p for p in root.glob("*.xlsx")
+            if p.is_file() and not p.name.startswith("~$")
+        )
+
+INPUT_FILES = sorted(candidates)
+
 # 1. Loader / Preprocess
-# ───────────────────────────────────────────────────────────────────────────
 REQUIRED_COLUMNS = ["review"]
 KEEP_META        = True
 
 # 리뷰 고유 ID 컬럼 (reset_index() 통해 부여)
 REVIEW_ID_COL    = "review_id"
 
-# ───────────────────────────────────────────────────────────────────────────
 # 2. Embedding
-# ───────────────────────────────────────────────────────────────────────────
-# 한국어 특화 SBERT (사용자 확인값)
-MODEL_NAME = "jhgan/ko-sbert-sts"
-BATCH_SIZE = 128
-DEVICE     = "cuda"
+# 임베딩 설정 (backend: local | openai)
+embed = {
+    "backend": "openai",                 # "local" | "openai"
+    "model": "text-embedding-3-small",      # local: SBERT model name, openai: text-embedding-3-small/large
+    "api_base": "https://api.openai.com/v1",
+    "batch_size": 128,
+    "device": "cuda",                   # local 전용
+    "max_retries": 3,                   # openai 전용
+    "timeout_sec": 30,                  # openai 전용
+    "cache_dir": "output/cache/embeddings",
+}
 
-# ───────────────────────────────────────────────────────────────────────────
+# SBERT 기반 helper 작업(절 분할, 클러스터 병합 등)에 사용할 공통 semantic 설정
+semantic = {
+    "model": "jhgan/ko-sbert-sts",
+    "device": "cuda",
+}
+
+clause_split = {
+    # 지정되지 않으면 semantic.model 사용
+    "semantic_model": None,
+    "use_semantic_gating": True,
+}
+
+merge = {
+    # 지정되지 않으면 semantic.model / semantic.device 사용
+    "semantic_model": None,
+    "device": None,
+}
+
+# 편의를 위해 dict를 object처럼 접근할 수 있도록 임시 클래스 정의
+class ConfigObject:
+    def __init__(self, source):
+        """Lightweight dot-access wrapper that tolerates repeated wrapping."""
+
+        if isinstance(source, ConfigObject):
+            data = vars(source)
+        elif hasattr(source, "items"):
+            data = source
+        else:
+            raise TypeError("ConfigObject expects a mapping or ConfigObject instance")
+
+        for key, value in data.items():
+            setattr(self, key, value)
+
+semantic = ConfigObject(semantic)
+
+if clause_split["semantic_model"] is None:
+    clause_split["semantic_model"] = semantic.model
+clause_split = ConfigObject(clause_split)
+
+if merge["semantic_model"] is None:
+    merge["semantic_model"] = semantic.model
+if merge["device"] is None:
+    merge["device"] = semantic.device
+merge = ConfigObject(merge)
+
+embed = ConfigObject(embed)
+clause_split = ConfigObject(clause_split)
+
+# ---------------------------------------------------------------------------
+# Backward-compatibility aliases
+# ---------------------------------------------------------------------------
+
+MODEL_NAME = embed.model
+DEVICE = embed.device
+BATCH_SIZE = embed.batch_size
+
 # 3. Clause splitting (절 분할)
-# ───────────────────────────────────────────────────────────────────────────
 CLAUSE_CONNECTIVES = [
     "그럼에도 불구하고", "에도 불구하고", "인데도 불구하고",
     "그렇긴 하지만", "그렇긴 한데", "기는 하지만", "긴 하지만", "긴 한데",
@@ -56,17 +184,13 @@ CLAUSE_CONNECTIVES = [
 
     "왜냐하면", "위해서", "위하여", "하려고",
 ]
-# ───────────────────────────────────────────────────────────────────────────
 # 4. ABSA 설정
-# ───────────────────────────────────────────────────────────────────────────
 # PyABSA BERT-SPC 멀티링궐 모델 (긍정/중립/부정)
 ABSA_MODEL_NAME = "multilingual"
 ABSA_BATCH_SIZE = 32
-# device: 기존 DEVICE 사용
+# device: 기존 config.embed.device 사용
 
-# ───────────────────────────────────────────────────────────────────────────
 # 5. UMAP  (note: 실제 실행은 tuner.get_cluster_params() 결과를 우선 사용)
-# ───────────────────────────────────────────────────────────────────────────
 # 기존 25→15로 소폭 하향하여 지역 구조를 조금 더 드러내되, 과분할은 방지
 UMAP_N_NEIGHBORS   = 15
 UMAP_MIN_DIST      = 0.05
@@ -74,65 +198,98 @@ UMAP_METRIC        = "cosine"
 UMAP_RANDOM_STATE  = 42
 UMAP_DIMS_CLUSTER  = 10
 
-# ───────────────────────────────────────────────────────────────────────────
 # 6. HDBSCAN (fallback defaults; 보통은 tuner 결과 사용)
-# ───────────────────────────────────────────────────────────────────────────
 HDBSCAN_MIN_CLUSTER_SIZE = 240
 HDBSCAN_MIN_SAMPLES      = 55
 HDBSCAN_SELECTION_EPS    = 0.05
 # UMAP 좌표(저차원) 기준으로는 보통 euclidean이 안정적
 HDBSCAN_METRIC           = "euclidean"
 
-# ───────────────────────────────────────────────────────────────────────────
 # 7. Cluster merge
-# ───────────────────────────────────────────────────────────────────────────
 ENABLE_CLUSTER_MERGE     = True
 CLUSTER_MERGE_THRESHOLD  = 0.93
 MERGE_BATCH_SIZE         = 64
 
-# ───────────────────────────────────────────────────────────────────────────
 # 8. Sentiment analysis (절 필터링용 ABSA)
-# ───────────────────────────────────────────────────────────────────────────
 ENABLE_SENTIMENT_ANALYSIS = False  # 절 분할 후 ABSA 강제 적용 시 True로 변경
 
-# ───────────────────────────────────────────────────────────────────────────
 # 9. Keyword / naming
-# ───────────────────────────────────────────────────────────────────────────
 CLUSTER_NAME_TOPK = 3              # 클러스터 이름용 키워드 개수
 KEYWORD_MAX_SENT  = 50             # 키워드 추출시 샘플 문장 수
 KEYWORD_NGRAM_RANGE = (1, 1)
 TOKEN_PATTERN = r"(?u)\b[가-힣]{2,}\b"
-KOREAN_STOPWORDS = [
+KOREAN_STOPWORDS_PATH = "data/stopwords_ko.txt"
+KOREAN_STOPWORDS_CORE = [
     "은", "는", "이", "가", "을", "를", "에", "도",
     "너무", "정말", "그냥",
 ]
+ALLOWED_POS_TAGS_KO = {"NNG", "NNP", "NNB", "VA", "VV", "SL"}
 JOSA_EOMI_TAGS = {"JKS", "JKB", "JKC", "JKG", "JKV", "JKQ", "JKO", "JX", "JC", "EP", "EF", "EC"}
 VALID_KEYWORD_RE = r"^[가-힣A-Za-z]{1,10}$"
 MAX_KEYWORD_DOCS = 50               # 샘플링 문장 수 제한
 KEYWORD_CANDIDATE_MULTIPLIER = 2    # KeyBERT 후보 배수
+KEYWORD_MMR_DIVERSITY = 0.5         # KeyBERT MMR diversity 기본값
+KEYWORD_MAX_PER_CLUSTER = 10        # 각 클러스터에서 최종 키워드 수 기본값
 USE_KEYBERT = False                 # True: KeyBERT, False: c-TF-IDF
+KEYWORD_EXTRA_STOPWORDS: list[str] = []  # 품목명/브랜드명을 추가해 대표 키워드에서 제외할 수 있는 리스트
+GLOBAL_COMMON_TERMS_MAX_CLUSTER_RATIO = 0.4
 
-# ───────────────────────────────────────────────────────────────────────────
+
+def _load_external_stopwords(stopword_path: str) -> set:
+    """Load additional Korean stopwords from the given relative path.
+
+    Falls back to an empty set if the file does not exist or cannot be read.
+    """
+
+    resolved = Path(stopword_path)
+    if not resolved.is_absolute():
+        resolved = BASE_DIR / resolved
+
+    if not resolved.exists():
+        logger.warning("Stopword file not found: %s — using core list only", resolved)
+        return set()
+
+    try:
+        lines = resolved.read_text(encoding="utf-8").splitlines()
+        words = {ln.strip() for ln in lines if ln.strip()}
+        logger.info("Loaded %d external Korean stopwords from %s", len(words), resolved)
+        return words
+    except Exception as exc:  # pragma: no cover - defensive I/O guard
+        logger.warning("Failed to load external stopwords from %s (%s)", resolved, exc)
+        return set()
+
+
+def _initialize_korean_stopwords() -> list:
+    """Return the union of the core stopword list and any external entries."""
+
+    stopwords = set(KOREAN_STOPWORDS_CORE)
+    stopwords.update(_load_external_stopwords(KOREAN_STOPWORDS_PATH))
+    return sorted(stopwords)
+
+
+KOREAN_STOPWORDS = _initialize_korean_stopwords()
+
 # 10. Summarizer
-# ───────────────────────────────────────────────────────────────────────────
-TOP_K_REPRESENTATIVES = 3           # 대표 문장 개수
+MAX_REPRESENTATIVE_SENTENCES = 3           # 각 클러스터당 최종 대표 문장 수
+TOP_K_REPRESENTATIVES = MAX_REPRESENTATIVE_SENTENCES  # backward compatibility
+REPRESENTATIVE_CANDIDATE_MULTIPLIER = 10   # 후보 문장 수 multiplier
+REPRESENTATIVE_MMR_LAMBDA = 0.7            # 중요도 vs 다양성 가중치 (0.7 = 중요도 70%)
+REPRESENTATIVE_DUPLICATE_SIM_THRESHOLD = 0.95  # 이 이상 유사하면 중복으로 간주
 
-# ───────────────────────────────────────────────────────────────────────────
 # 11. Outlier & ABSA confidence handling
-# ───────────────────────────────────────────────────────────────────────────
 HANDLE_OUTLIERS           = True
 OUTLIER_LABEL             = "other"
 ABSA_CONFIDENCE_THRESHOLD = 0.6
 
-# ───────────────────────────────────────────────────────────────────────────
 # 12. Refinement layer (domain-agnostic)
-# ───────────────────────────────────────────────────────────────────────────
 # rules/facets.yml, rules/thresholds.yml 사용. main.py에서 getattr로 안전 로드.
 REFINEMENT_ENABLED            = True
 REFINEMENT_FACETS_PATH        = "rules/facets.yml"
 REFINEMENT_THRESHOLDS_PATH    = "rules/thresholds.yml"
 # refined_cluster_id 네임스페이스(neg/neu/pos = 0/1/2)
 REFINEMENT_STABLE_ID          = {"negative": 0, "neutral": 1, "positive": 2}
+# Facet keyword bonus weight (cosine base + λ * log(1 + hits))
+FACET_KEYWORD_BONUS_LAMBDA    = 0.1
 
 # ---- Smart clause split knobs ----
 SMART_SPLIT_ENABLED = True                 # 끄고 싶으면 False
@@ -147,7 +304,6 @@ SMART_SPLIT_MAX_SPLITS_PER_SENT = 3        # 문장당 최대 분할 수
 # Stable IDs / resume cache
 ENABLE_STABLE_IDS = True
 
-# ───────────────────────────────────────────────────────────────────────────
 # Tuner(자동 파라미터) 기본 비율
 # 작을수록 더 세분화(=클러스터 수 ↑), 클수록 더 합침(=클러스터 수 ↓)
 TUNER_BASE_PCT_LARGE = 0.005   # N이 큰 셋 (대략 6천 이상)
@@ -158,7 +314,6 @@ TUNER_UMAP_MIN_DIMS = 8
 TUNER_UMAP_MAX_DIMS = 14
 TUNER_UMAP_MAX_NEIGHBORS = 100
 
-# ───────────────────────────────────────────────────────────────────────────
 # 파셋 버킷(예: 당도/식감/외관…) 전용 코스닝(coarsening) 노브
 #   → 버킷 내부에서 너무 잘게 쪼개지는 것을 방지하기 위한 완만한 합침 세팅
 BUCKET_MIN_CLUSTER_SIZE_MULT = 1.35   # 기본 min_cluster_size에 곱해 키움
