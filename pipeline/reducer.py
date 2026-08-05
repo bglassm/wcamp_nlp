@@ -6,7 +6,7 @@ try:
     from umap import UMAP
 except ImportError as e:
     raise ImportError(
-        "🛑 `umap-learn`가 설치되어 있지 않습니다. ``pip install umap-learn``로 설치 후 사용하세요."
+        "`umap-learn` is not installed. Run: pip install umap-learn"
     ) from e
 
 logger = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ def reduce_embeddings(
         raise ValueError("`embeddings` must be 2-D array (n_samples × n_features).")
 
     logger.info(
-        "📉 UMAP reducing: %s → %dD (n_neighbors=%d, min_dist=%.2f, metric=%s)",
+        "[UMAP] reducing: %s -> %dD (n_neighbors=%d, min_dist=%.2f, metric=%s)",
         embeddings.shape,
         n_components,
         n_neighbors,
@@ -48,5 +48,5 @@ def reduce_embeddings(
     )
     reduced = reducer.fit_transform(embeddings)
 
-    logger.info("✅ Reduction complete — new shape: %s", reduced.shape)
+    logger.info("[UMAP] done: shape=%s", reduced.shape)
     return reduced

@@ -1,4 +1,3 @@
-# pipeline/report.py
 from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -7,29 +6,20 @@ import numpy as np
 import json
 import config
 
-# NEW: 기본 불용어 목록 (클러스터 라벨용)
-DEFAULT_STOPWORDS_KO = [  # CHANGED: 대표어 품질 개선
-    "맛있다",
-    "맛없다",
-    "괜찮다",
-    "좋다",
-    "나쁘다",
-    "많다",
-    "적다",
-    "없다",
-    "있다",
-    "똑같다",
-    "같다",
-    "심하다",
-    "괜히",
-    "그냥",
+# Korean stopwords used when building short cluster labels
+DEFAULT_STOPWORDS_KO = [
+    "맛있다", "맛없다", "괜찮다", "좋다", "나쁘다",
+    "많다", "적다", "없다", "있다", "똑같다",
+    "같다", "심하다", "괜히", "그냥",
 ]
 
-# facet 컬럼 후보 (우선순위)
+# priority order for picking the facet column
 BUCKET_COL_CANDIDATES = ["facet_bucket", "facet_top1", "facet", "bucket", "facet_topk"]
+
 
 def _rid_col() -> str:
     return getattr(config, "REVIEW_ID_COL", "review_id")
+
 
 def _most_common(series: pd.Series, *, skip_blank: bool = True):
     s = series.dropna()
@@ -39,7 +29,9 @@ def _most_common(series: pd.Series, *, skip_blank: bool = True):
         return ""
     return s.value_counts().idxmax()
 
+
 def _ensure_meta_join(clause_df: pd.DataFrame, raw_df: pd.DataFrame) -> pd.DataFrame:
+    """Left-join clause_df with review-level metadata from raw_df."""
     rid = getattr(config, "REVIEW_ID_COL", "review_id")
     left = clause_df.copy()
     right = raw_df.copy()
@@ -51,49 +43,47 @@ def _ensure_meta_join(clause_df: pd.DataFrame, raw_df: pd.DataFrame) -> pd.DataF
     keep = [rid] + [c for c in meta_candidates if c in right.columns]
     return left.merge(right[keep], on=rid, how="left")
 
+
 def _pick_bucket_col(df: pd.DataFrame) -> Optional[str]:
+    """Return the first available facet column from BUCKET_COL_CANDIDATES."""
     for c in BUCKET_COL_CANDIDATES:
         if c in df.columns:
             return c
     return None
 
+
 def _materialize_bucket(df: pd.DataFrame) -> pd.Series:
-    """
-    facet 컬럼을 유연하게 단일 문자열 컬럼으로 환산:
-    - facet_bucket / facet_top1 / facet / bucket: 그대로 문자열화
-    - facet_topk: list/JSON-string이면 첫 항목을 사용
-    """
+    """Normalize the best available facet column to a plain string Series.
+    For facet_topk (list or JSON-string), the first element is used."""
     col = _pick_bucket_col(df)
     if col is None:
         return pd.Series([""] * len(df), index=df.index)
 
     s = df[col]
 
-    # facet_topk가 리스트(또는 리스트 JSON 문자열)인 경우 첫 요소를 택함
     if col == "facet_topk":
         def first_of_topk(v):
             if isinstance(v, list):
-                return (v[0] if v else "")
+                return v[0] if v else ""
             if isinstance(v, str):
                 v2 = v.strip()
-                if (v2.startswith("[") and v2.endswith("]")):
+                if v2.startswith("[") and v2.endswith("]"):
                     try:
                         arr = json.loads(v2)
-                        return (arr[0] if isinstance(arr, list) and arr else "")
+                        return arr[0] if isinstance(arr, list) and arr else ""
                     except Exception:
                         return ""
             return ""
         return s.apply(first_of_topk).astype(str).fillna("")
     else:
-        # 나머지는 문자열화해서 반환
         return s.astype(str).fillna("")
 
-# ---------------------------------------------------------------------
-# A. 대표어 요약 테이블: [감정, 분류, 대표어, 개수, 대표 문장]  # CHANGED: 대표 문장 컬럼 추가
-# ---------------------------------------------------------------------
-# NEW: facet/keyword 기반 대표어 라벨 생성 헬퍼
+
+# --- Section A: cluster representative summary table ---
+
 def _build_keyword_label(kw: Optional[Dict[int, List[str]]]) -> Dict[int, str]:
-    """클러스터별 키워드 라벨 생성 (불용어 필터 + 상위 N개 제한)."""
+    """Build a short display label per cluster from its keyword list,
+    filtering stopwords and capping at config.CLUSTER_NAME_TOPK tokens."""
     if not kw:
         return {}
 
@@ -107,7 +97,6 @@ def _build_keyword_label(kw: Optional[Dict[int, List[str]]]) -> Dict[int, str]:
         except Exception:
             continue
 
-        # 리스트/튜플 형태의 키워드만 필터링 + topk 적용
         if isinstance(v, (list, tuple)):
             cleaned = [str(x).strip() for x in v if str(x).strip()]
             filtered = [token for token in cleaned if token not in stopwords]
@@ -122,24 +111,21 @@ def _build_keyword_label(kw: Optional[Dict[int, List[str]]]) -> Dict[int, str]:
     return labels
 
 
-# NEW: facet 텍스트 정리
 def _format_facet_label(raw: object) -> str:
+    """Strip polarity suffixes (_negative/_neutral/_positive) from a facet string."""
     if raw is None:
         return ""
     s = str(raw).strip()
     if s == "" or s.lower() in {"nan", "none"}:
         return ""
-
-    suffixes = ["_negative", "_neutral", "_positive"]
-    lower_s = s.lower()
-    for suf in suffixes:
-        if lower_s.endswith(suf):
+    for suf in ("_negative", "_neutral", "_positive"):
+        if s.lower().endswith(suf):
             return s[: -len(suf)]
     return s
 
 
-# NEW: facet 라벨 + 키워드 라벨 결합
 def _combine_labels(facet_label: str, kw_label: str, fallback: str) -> str:
+    """Combine facet and keyword labels; fall back to the representative sentence."""
     facet_label = facet_label.strip()
     kw_label = kw_label.strip()
     if facet_label and kw_label:
@@ -156,17 +142,17 @@ def _build_rep_summary_table(
     reps: Dict[int, List[str]],
     kw: Optional[Dict[int, List[str]]] = None,
 ) -> pd.DataFrame:
+    """Build the cluster summary table: [감정, 분류, 대표어, 개수, 대표 문장]."""
     df = clause_df_with_meta.copy()
-    # 노이즈(-1 또는 999류) 제외
+
+    # exclude noise clusters (-1 and 999-class offsets)
     if "cluster_label" in df.columns:
         df = df[pd.to_numeric(df["cluster_label"], errors="coerce").fillna(-1).astype(int) >= 0]
     if df.empty:
         return pd.DataFrame(columns=["감정", "분류", "대표어", "개수", "대표 문장"])
 
-    # ---- 파셋(분류) 소스 유연 처리 ----
-    # 우선순위: facet_top1 > facet_topk[0] > facet_bucket > (없으면 공백)
+    # resolve facet source column; priority: facet_top1 > facet_topk > facet_bucket
     def _safe_first(x):
-        # x가 리스트/튜플이면 첫 원소, "['a','b']" 같은 문자열 JSON이면 파싱 시도
         try:
             if isinstance(x, (list, tuple)):
                 return x[0] if len(x) else ""
@@ -177,8 +163,7 @@ def _build_rep_summary_table(
                     parsed = _json.loads(s)
                     if isinstance(parsed, list) and parsed:
                         return str(parsed[0])
-                    # dict 등은 키 중 하나를 택하지 않고 공백 처리
-                return s  # 일반 문자열이면 그대로
+                return s
         except Exception:
             pass
         return ""
@@ -197,7 +182,6 @@ def _build_rep_summary_table(
         facet_src_col = None
         df["_facet_top1_eff"] = ""
 
-    # 클러스터별 개수/감정/분류(파셋) 취합
     agg_cnt = (
         df.groupby("cluster_label", as_index=False)
           .size()
@@ -224,7 +208,7 @@ def _build_rep_summary_table(
         .merge(agg_facet[["cluster_label", "분류"]], on="cluster_label", how="left")
     )
 
-    kw_labels = _build_keyword_label(kw)  # NEW: 키워드 기반 라벨
+    kw_labels = _build_keyword_label(kw)
     rep_labels = []
     rep_full_texts = []
     for cid, facet_raw in base[["cluster_label", "분류"]].itertuples(index=False):
@@ -235,28 +219,26 @@ def _build_rep_summary_table(
         rep_text_short = rep_text[:40].rstrip() + "…" if len(rep_text) > 40 else rep_text
         facet_label = _format_facet_label(facet_raw)
         kw_label = kw_labels.get(int(cid), "")
-        label = _combine_labels(facet_label, kw_label, fallback=rep_text_short)  # CHANGED: 대표어는 facet+키워드 라벨
+        label = _combine_labels(facet_label, kw_label, fallback=rep_text_short)
         rep_labels.append(label)
 
-    base["대표어"] = rep_labels  # 대표어: facet+키워드 기반의 짧은 라벨 (기존: 대표 문장 1개)
-    base["대표 문장"] = rep_full_texts  # NEW: 전체 대표 문장 예시
+    base["대표어"] = rep_labels
+    base["대표 문장"] = rep_full_texts
 
     out = base[["감정", "분류", "대표어", "개수", "대표 문장"]].copy()
-    # CHANGED: 분류 공백은 표시/정렬용으로 빈 문자열 처리
+
     def _clean_facet(val: object) -> str:
         s = "" if val is None else str(val).strip()
         return "" if s.lower() in {"none", "nan"} else s
 
     out["분류"] = out["분류"].apply(_clean_facet)
 
-    # 정렬: 감정(neg/neu/pos) → 분류(미분류 맨 아래) → 개수 desc
+    # sort: polarity (neg/neu/pos) -> facet (unclassified last) -> count desc
     order_pol = {"negative": 0, "neutral": 1, "positive": 2}
     out["_p"] = out["감정"].map(order_pol).fillna(99)
-
     non_blank_facets = sorted([f for f in out["분류"].unique() if f])
-    facet_categories = non_blank_facets + [""]  # 미분류("")를 항상 마지막에
+    facet_categories = non_blank_facets + [""]
     out["_facet_cat"] = pd.Categorical(out["분류"], categories=facet_categories, ordered=True)
-
     out = (
         out.sort_values(by=["_p", "_facet_cat", "개수"], ascending=[True, True, False])
            .drop(columns=["_p", "_facet_cat"])
@@ -264,25 +246,22 @@ def _build_rep_summary_table(
     )
     return out
 
-# ---------------------------------------------------------------------
-# B. 플랫폼별 수집/분석 수 & 긍/중/부 비율
-# ---------------------------------------------------------------------
+
+# --- Section B: per-platform collection/analysis counts and polarity ratios ---
+
 def _build_platform_block(clause_df_with_meta: pd.DataFrame, raw_df: pd.DataFrame) -> pd.DataFrame:
-    # (1) 수집된 데이터 수(리뷰 원본)
     if "platform" in raw_df.columns:
         col_counts = raw_df["platform"].fillna("unknown").astype(str).value_counts()
     else:
         col_counts = pd.Series(dtype=int)
     collected = col_counts.to_dict()
 
-    # (2) 분석된 데이터 수(절 단위, ABSA 통과 후)
     if "platform" in clause_df_with_meta.columns:
         ana_counts = clause_df_with_meta["platform"].fillna("unknown").astype(str).value_counts()
     else:
         ana_counts = pd.Series(dtype=int)
     analyzed = ana_counts.to_dict()
 
-    # (3) 플랫폼별 감정 비율 및 개수 (절 기준)
     pol_ratio: Dict[str, Dict[str, float]] = {}
     pol_counts: Dict[str, Dict[str, int]] = {}
     grp = pd.DataFrame()
@@ -298,7 +277,10 @@ def _build_platform_block(clause_df_with_meta: pd.DataFrame, raw_df: pd.DataFram
             for plat in grp.index
         }
 
-    raw_platforms = set(list(collected.keys()) + list(analyzed.keys()) + list(pol_ratio.keys()) + list(pol_counts.keys()))
+    raw_platforms = set(
+        list(collected.keys()) + list(analyzed.keys()) +
+        list(pol_ratio.keys()) + list(pol_counts.keys())
+    )
     preferred = getattr(config, "PLATFORM_ORDER", [])
     ordered = [p for p in preferred if p in raw_platforms]
     rest = sorted(p for p in raw_platforms if p not in preferred)
@@ -313,8 +295,7 @@ def _build_platform_block(clause_df_with_meta: pd.DataFrame, raw_df: pd.DataFram
             overall = int((clause_df_with_meta["polarity"] == which).sum())
         else:
             overall = 0
-        row = [int(pol_counts.get(p, {}).get(which, 0)) for p in platforms]
-        return [overall] + row
+        return [overall] + [int(pol_counts.get(p, {}).get(which, 0)) for p in platforms]
 
     def _ratio_row(which: str) -> List[float]:
         row = [pol_ratio.get(p, {}).get(which, 0.0) for p in platforms]
@@ -330,18 +311,18 @@ def _build_platform_block(clause_df_with_meta: pd.DataFrame, raw_df: pd.DataFram
         "긍정 개수":        _count_row("positive"),
         "중립 개수":        _count_row("neutral"),
         "부정 개수":        _count_row("negative"),
-        "긍정 비율 (%)":     [v * 100 for v in _ratio_row("positive")],
-        "중립 비율 (%)":     [v * 100 for v in _ratio_row("neutral")],
-        "부정 비율 (%)":     [v * 100 for v in _ratio_row("negative")],
+        "긍정 비율 (%)":    [v * 100 for v in _ratio_row("positive")],
+        "중립 비율 (%)":    [v * 100 for v in _ratio_row("neutral")],
+        "부정 비율 (%)":    [v * 100 for v in _ratio_row("negative")],
     }
     block = pd.DataFrame(data, index=cols).T.reset_index().rename(columns={"index": "메트릭"})
     for r in ["긍정 비율 (%)", "중립 비율 (%)", "부정 비율 (%)"]:
         block.loc[block["메트릭"] == r, cols] = block.loc[block["메트릭"] == r, cols].astype(float).round(1)
     return block
 
-# ---------------------------------------------------------------------
-# C. 연도별 리뷰 비율(원본 리뷰 기준)
-# ---------------------------------------------------------------------
+
+# --- Section C: year-over-year review count ratios ---
+
 def _build_year_ratio(raw_df: pd.DataFrame) -> pd.DataFrame:
     if "date" not in raw_df.columns:
         return pd.DataFrame(columns=["메트릭"])
@@ -354,25 +335,18 @@ def _build_year_ratio(raw_df: pd.DataFrame) -> pd.DataFrame:
     years = year_cnt.index.astype(int).tolist()
     counts = year_cnt.values.tolist()
     ratios = (year_cnt / total * 100).round(1).tolist()
-    data = [
-        ["리뷰 수", *counts],
-        ["비율(%)", *ratios],
-    ]
+    data = [["리뷰 수", *counts], ["비율(%)", *ratios]]
     return pd.DataFrame(data, columns=["메트릭"] + years)
 
-# NEW: unify report sheet builder
+
 def _build_unified_report_sheet(
     rep_tbl: pd.DataFrame,
     plat_tbl: pd.DataFrame,
     year_tbl: pd.DataFrame,
     raw_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """
-    rep_tbl / plat_tbl / year_tbl을 이어붙여 단일 시트(report)용 DataFrame을 만든다.
-    - 헤더/타이틀/섹션 라벨까지 포함.
-    - to_excel(header=False)로 쓸 예정이므로 첫 행부터 실제 데이터가 들어간다고 가정한다.
-    """
-
+    """Concatenate all summary blocks into a single flat DataFrame for the
+    'report' sheet. Written with header=False so the first row is data."""
     rows: List[List[object]] = []
 
     product_name = ""
@@ -385,24 +359,19 @@ def _build_unified_report_sheet(
         except Exception:
             product_name = ""
 
-    # 타이틀 블록
     rows.append(["크롤링 리포트"])
     rows.append(["품목명", product_name])
     rows.append(["회차"])
     rows.append([])
-
-    # 인사이트 블록
     rows.append(["Insights", "(비워두기)"])
     rows.append([])
     rows.append([])
 
-    # 데이터 수량 블록
     rows.append(["데이터 수량"])
     rows.append(plat_tbl.columns.tolist())
     for _, row in plat_tbl.iterrows():
         rows.append(list(row))
 
-    # 연도별 비율 블록
     if not year_tbl.empty:
         rows.append([])
         rows.append(["데이터 연도별 비율"])
@@ -410,7 +379,6 @@ def _build_unified_report_sheet(
         for _, row in year_tbl.iterrows():
             rows.append(list(row))
 
-    # 클러스터 요약 블록
     if not rep_tbl.empty:
         rows.append([])
         rows.append(["클러스터 요약"])
@@ -420,9 +388,7 @@ def _build_unified_report_sheet(
 
     return pd.DataFrame(rows)
 
-# ---------------------------------------------------------------------
-# PUBLIC: 저장 함수
-# ---------------------------------------------------------------------
+
 def save_client_report(
     clause_df: pd.DataFrame,
     raw_df: pd.DataFrame,
@@ -430,37 +396,36 @@ def save_client_report(
     kw: Optional[Dict[int, List[str]]] = None,
     output_path: Path | None = None,
 ) -> None:
-    """
-    생성물:
-    - Sheet1: 대표어 요약 (감정/분류/대표어/개수/대표 문장)
-    - Sheet2: 데이터 수량 (플랫폼별 수집·분석 수 + 긍/중/부 비율)
-    - Sheet3: 연도별 리뷰 비율 (원본 리뷰 기준)
-    - NEW: report 시트(단일 페이지 레이아웃)
-    """
+    """Write the client Excel report with four sheets:
+    report (unified layout), 대표어요약, 데이터수량, 연도별비율."""
     if output_path is None:
         raise ValueError("output_path is required for save_client_report")
+
     clause_w_meta = _ensure_meta_join(clause_df, raw_df)
 
-    facet_col = "facet_bucket" if "facet_bucket" in clause_w_meta.columns else ("facet_top1" if "facet_top1" in clause_w_meta.columns else None)
+    facet_col = (
+        "facet_bucket" if "facet_bucket" in clause_w_meta.columns
+        else ("facet_top1" if "facet_top1" in clause_w_meta.columns else None)
+    )
     if facet_col is None:
         raise ValueError("No facet column found for report (need facet_bucket or facet_top1)")
+
     clause_w_meta["분류"] = clause_w_meta[facet_col]
     clause_w_meta.loc[
         clause_w_meta["분류"].astype(str).str.strip().isin(["", "nan", "None"]),
         "분류",
     ] = None
     if clause_w_meta["분류"].isna().all():
-        raise ValueError(f"Facet column '{facet_col}' is entirely NaN — check route_facets() and YAML threshold")
+        raise ValueError(
+            f"Facet column '{facet_col}' is entirely NaN — check route_facets() and YAML threshold"
+        )
 
-    rep_tbl = _build_rep_summary_table(clause_w_meta, reps, kw=kw)  # CHANGED: 키워드 기반 대표어 생성
+    rep_tbl = _build_rep_summary_table(clause_w_meta, reps, kw=kw)
     plat_tbl = _build_platform_block(clause_w_meta, raw_df)
     year_tbl = _build_year_ratio(raw_df)
-
-    # NEW: unified report sheet
     unified = _build_unified_report_sheet(rep_tbl, plat_tbl, year_tbl, raw_df)
 
     with pd.ExcelWriter(output_path, engine="openpyxl") as w:
-        # CHANGED: add unified sheet combining summary blocks
         unified.to_excel(w, sheet_name="report", index=False, header=False)
         rep_tbl.to_excel(w, sheet_name="대표어요약", index=False)
         plat_tbl.to_excel(w, sheet_name="데이터수량", index=False)

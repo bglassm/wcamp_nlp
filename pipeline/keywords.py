@@ -127,7 +127,7 @@ def _get_kw_model(model_name: Optional[str]) -> KeyBERT:
     """Load and cache a KeyBERT model."""
     resolved = _resolve_keyword_model_name(model_name)
     if resolved not in _kw_models:
-        logger.info("⬇️ Loading KeyBERT model: %s", resolved)
+        logger.info("[KEYWORDS] loading KeyBERT model: %s", resolved)
         _kw_models[resolved] = KeyBERT(resolved)
     return _kw_models[resolved]
 

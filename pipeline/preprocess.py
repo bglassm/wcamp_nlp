@@ -20,12 +20,12 @@ def preprocess_reviews(df: pd.DataFrame) -> pd.DataFrame:
     if "review" not in df.columns:
         raise KeyError("Run loader.load_reviews first")
 
-    logger.info("🔧 Pre-processing %s rows", f"{len(df):,}")
+    logger.info("[PREPROCESS] processing %s rows", f"{len(df):,}")
     out = df.copy()
     out["review"] = out["review"].astype(str).map(clean_review_text)
 
     before = len(out)
     out = out.loc[out["review"].str.len() > 0].reset_index(drop=True)
-    logger.info("✨ Completed: %s → %s rows after cleaning",
+    logger.info("[PREPROCESS] done: %s -> %s rows after cleaning",
                 f"{before:,}", f"{len(out):,}")
     return out

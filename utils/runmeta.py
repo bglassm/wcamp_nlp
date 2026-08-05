@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 import json, subprocess, sys
 
+
 def _git_rev() -> str:
+    """Return current git short hash, or 'unknown' on failure."""
     try:
         return subprocess.check_output(
             ["git", "rev-parse", "--short", "HEAD"],
@@ -12,8 +14,9 @@ def _git_rev() -> str:
     except Exception:
         return "unknown"
 
-# 🔧 JSON 직렬화 헬퍼: Path, numpy, set, 날짜 등 안전 변환
+
 def _json_default(o):
+    """Fallback JSON serializer for Path, numpy, set, datetime types."""
     try:
         import numpy as _np
         import pathlib as _pl
@@ -28,13 +31,14 @@ def _json_default(o):
             return o.isoformat()
     except Exception:
         pass
-    # 최후 수단: 문자열화(깨지지 않게)
     return str(o)
 
+
 def write_run_manifest(path: Path, *, config_obj) -> None:
+    """Write run metadata (git hash, python version, config constants) to JSON."""
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    # 대문자 속성만 수집 (CONFIG 상수들)
+    # collect uppercase config constants only
     cfg = {}
     for k in dir(config_obj):
         if not k.isupper():
@@ -55,7 +59,9 @@ def write_run_manifest(path: Path, *, config_obj) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2, default=_json_default)
 
+
 def write_meta_json(path: Path, *, model_name: str, embed_dim: int, notes: str = "") -> None:
+    """Write embedding model metadata to JSON."""
     path.parent.mkdir(parents=True, exist_ok=True)
     meta = {
         "embedding_model": model_name,

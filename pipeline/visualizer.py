@@ -113,7 +113,7 @@ def _save_sentiment_pie(clause_df: pd.DataFrame, out_path: Path, stem: str) -> b
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
-    logger.info("[VIS] sentiment_pie saved → %s", out_path.name)
+    logger.info("[VIS] sentiment_pie saved: %s", out_path.name)
     return True
 
 
@@ -167,7 +167,7 @@ def _save_facet_bar(clause_df: pd.DataFrame, out_path: Path, stem: str) -> bool:
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
-    logger.info("[VIS] facet_bar saved → %s", out_path.name)
+    logger.info("[VIS] facet_bar saved: %s", out_path.name)
     return True
 
 
@@ -207,7 +207,7 @@ def _save_cluster_scatter(
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
-    logger.info("[VIS] cluster_scatter saved → %s", out_path.name)
+    logger.info("[VIS] cluster_scatter saved: %s", out_path.name)
     return True
 
 
@@ -233,7 +233,7 @@ def _save_year_trend(raw_df: pd.DataFrame, clause_df: pd.DataFrame, out_path: Pa
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
-    logger.info("[VIS] year_trend saved → %s", out_path.name)
+    logger.info("[VIS] year_trend saved: %s", out_path.name)
     return True
 
 
@@ -302,7 +302,7 @@ def _save_keyword_bar(
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
-    logger.info("[VIS] keyword_bar saved → %s", out_path.name)
+    logger.info("[VIS] keyword_bar saved: %s", out_path.name)
     return True
 
 
@@ -560,6 +560,6 @@ def generate_run_report(
         png_paths=png_paths,
     )
     html_path.write_text(html_content, encoding="utf-8")
-    logger.info("[VIS] HTML dashboard saved → %s", html_path.name)
+    logger.info("[VIS] HTML dashboard saved: %s", html_path.name)
 
     return html_path

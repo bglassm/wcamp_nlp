@@ -16,11 +16,10 @@ import tempfile
 import pandas as pd
 import numpy as np
 
-os.environ.setdefault("TQDM_DISABLE", "1")  # tqdm 전역 비활성화
-os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")  # 허공 경고/프로그레스 억제
+os.environ.setdefault("TQDM_DISABLE", "1")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 
-# sentence-transformers tqdm 전역 OFF
 try:
     from sentence_transformers import util as _st_util
     _st_util.set_progress_bar_enabled(False)
@@ -38,7 +37,7 @@ from pipeline.loader import load_reviews
 from pipeline.preprocess import preprocess_reviews, clean_review_text
 from pipeline.clause_splitter import split_clauses
 from pipeline.absa import classify_clauses
-from pipeline.embedder import get_embedder, CachingEmbedder, _get_model # embed_reviews is now deprecated
+from pipeline.embedder import get_embedder, CachingEmbedder, _get_model
 from pipeline.reducer import reduce_embeddings
 from pipeline.clusterer import cluster_embeddings, evaluate_clusters
 from pipeline.tuner import get_cluster_params
@@ -61,14 +60,11 @@ from pipeline.refiner import (
 from utils.runmeta import write_run_manifest, write_meta_json
 from pipeline.visualizer import generate_run_report
 
-# from sentence_transformers import SentenceTransformer # Not needed here anymore, moved to embedder.py
-
 try:
     import yaml
 except ImportError as _e:
-    raise SystemExit("PyYAML가 필요합니다. 가상환경에서: pip install pyyaml") from _e
+    raise SystemExit("PyYAML is required. Run: pip install pyyaml") from _e
 
-# --- 로그 & 경고 억제 ---
 logging.getLogger("pyabsa").setLevel(logging.ERROR)
 logging.getLogger("transformers").setLevel(logging.ERROR)
 logging.getLogger("kss").setLevel(logging.ERROR)
@@ -78,35 +74,33 @@ warnings.filterwarnings("ignore", category=ResourceWarning)
 
 logger = logging.getLogger(__name__)
 
-# --- 유틸: 라벨 오프셋/병합 ---
+
+# --- label offset helpers ---
+
 def _offset_labels(labels: np.ndarray, base: int) -> np.ndarray:
-    """
-    HDBSCAN 라벨을 폴라리티별 base(neg=0, neu=1000, pos=2000)만큼 이동.
-    -1(노이즈) → base+999 숫자화.
-    """
+    """Shift HDBSCAN labels by polarity base (neg=0, neu=1000, pos=2000).
+    Noise label -1 is mapped to base+999."""
     out = []
     for l in labels:
         if isinstance(l, str):
             l = -1 if l.lower() == "other" else int(l)
-        if int(l) == -1:
-            out.append(base + 999)
-        else:
-            out.append(int(l) + base)
+        out.append(base + 999 if int(l) == -1 else int(l) + base)
     return np.array(out, dtype=int)
 
+
 def _relabel_dict(d: Dict[int, list], base: int) -> Dict[int, list]:
-    """reps/keywords 딕셔너리의 키(클러스터 id)를 base만큼 이동."""
+    """Shift cluster ID keys in a reps/keywords dict by base."""
     new_d: Dict[int, list] = {}
     for k, v in d.items():
         try:
-            kk = int(k)
-            new_d[kk + base] = v
+            new_d[int(k) + base] = v
         except Exception:
             new_d[base + 999] = v
     return new_d
 
+
 def _ensure_facet_top1(df: pd.DataFrame, *, default: str | None = None) -> pd.DataFrame:
-    """Ensure a ``facet_top1`` column exists by copying from ``facet_bucket`` or filling."""
+    """Ensure facet_top1 column exists, copying from facet_bucket if available."""
     if "facet_top1" in df.columns:
         return df
     if "facet_bucket" in df.columns:
@@ -116,92 +110,67 @@ def _ensure_facet_top1(df: pd.DataFrame, *, default: str | None = None) -> pd.Da
         return out
     return df.assign(facet_top1=default)
 
+
 def _normalize_review_text(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip().lower())
+
 
 def _hash_text(text: str) -> str:
     return hashlib.md5(text.encode("utf-8", "ignore")).hexdigest()
 
+
 def _has_korean(text: str) -> bool:
     return bool(re.search(r"[가-힣]", text or ""))
 
-# --- 유틸: 다양한 facets YAML 스키마를 표준 스키마로 정규화 ---
+
+# --- facets YAML loader with schema normalization ---
+
 def _load_facets_forgiving(facets_path: Path, facet_embedder):
-    """
-    지원 스키마 예:
-      1) {"facets": [{"name": "...", "keywords": [...]}, ...]}
-      2) {"facets": {"sweetness": {"keywords":[...]}, ...}}
-      3) [{"name": "...", "keywords": [...]}, ...]
-      4) {"sweetness": {"keywords":[...]}, ...} (top-level dict-of-dicts)
-    위를 list-of-facets 표준으로 변환 후 임시 YAML로 저장 → load_facets_yml 재사용.
-    """
+    """Load a facets YAML and normalize it to the standard list-of-buckets schema.
+    Supports four schema variants; writes a temp YAML and delegates to load_facets_yml."""
     with facets_path.open("r", encoding="utf-8") as f:
         y = yaml.safe_load(f) or {}
-
-        import os as _os
-        _abs_path = _os.path.abspath(facets_path)
+        _abs_path = os.path.abspath(facets_path)
         _root_type = type(y).__name__
         _root_keys = list(y.keys())[:10] if isinstance(y, dict) else []
         logger.info("[FACETS] loaded: %s | root=%s keys=%s", _abs_path, _root_type, _root_keys)
 
     def to_list(obj):
-        """
-        Accept:
-        - list schema: [{"id":..,"name":..,"desc":..}, ...] or {"buckets":[...]}
-        - dict schema: {"facets": {"freshness": {"description": "...", "keywords":[...]}, ...}}
-        """
-
+        """Convert any supported schema to a list of bucket dicts."""
         def _normalize_keywords(raw):
             if isinstance(raw, str):
                 raw = [raw]
             if not isinstance(raw, (list, tuple)):
                 return []
-            out = []
-            for kw in raw:
-                try:
-                    s = str(kw).strip()
-                except Exception:
-                    continue
-                if s:
-                    out.append(s)
-            return out
+            return [str(kw).strip() for kw in raw if str(kw).strip()]
 
-        # case 1: already a list
         if isinstance(obj, list):
             return obj
-        # case 2: dict wrapper
         if isinstance(obj, dict):
-            # standard: buckets list
             if "buckets" in obj and isinstance(obj["buckets"], list):
                 return obj["buckets"]
-            # legacy: facets dict
             if "facets" in obj and isinstance(obj["facets"], dict) and obj["facets"]:
                 buckets = []
                 for name, node in obj["facets"].items():
                     node = node or {}
-                    # desc: desc > description > keywords → fallback
-                    desc = None
                     kw_list = _normalize_keywords(node.get("keywords"))
+                    desc = None
                     for k in ("desc", "description"):
                         v = node.get(k)
                         if v and str(v).strip():
                             desc = str(v).strip()
                             break
                     if not desc:
-                        if kw_list:
-                            desc = f"{name} 관련 표현: " + " ".join(map(str, kw_list))
-                        else:
-                            desc = f"{name}이/가 좋다 나쁘다 만족 불만"
-                    bucket = {
-                        "id": str(name).lower().replace(" ", ""),
-                        "name": str(name),
-                        "desc": desc
-                    }
+                        desc = (
+                            f"{name} 관련 표현: " + " ".join(map(str, kw_list))
+                            if kw_list
+                            else f"{name}이/가 좋다 나쁘다 만족 불만"
+                        )
+                    bucket = {"id": str(name).lower().replace(" ", ""), "name": str(name), "desc": desc}
                     if kw_list:
                         bucket["keywords"] = kw_list
                     buckets.append(bucket)
                 return buckets
-        # fallback
         raise RuntimeError(f"Unsupported facets YAML schema: {type(obj).__name__}")
 
     facets_list = to_list(y)
@@ -217,81 +186,66 @@ def _load_facets_forgiving(facets_path: Path, facet_embedder):
         try:
             obj = load_facets_yml(str(tmp_path), facet_embedder)
             if obj:
-                logger.info("[FACETS] load_facets_yml OK via schema=%s", tag)
+                logger.info("[FACETS] schema=%s OK", tag)
                 return obj, tmp_path
             else:
-                logger.warning("[FACETS] schema=%s yielded empty from load_facets_yml; will retry with fallback", tag)
+                logger.warning("[FACETS] schema=%s returned empty, trying fallback", tag)
                 return None, tmp_path
         except Exception as e:
-            logger.warning("[FACETS] schema=%s raised %s; will retry with fallback", tag, e)
+            logger.warning("[FACETS] schema=%s raised %s, trying fallback", tag, e)
             return None, tmp_path
 
     facets_obj, tmp_path = _try_build_facets({"buckets": facets_list}, tag="buckets")
     if not facets_obj:
-        facets_obj, tmp_path2 = _try_build_facets({"facets": facets_list}, tag="facets")
-        tmp_path = tmp_path2
+        facets_obj, tmp_path = _try_build_facets({"facets": facets_list}, tag="facets")
 
     if not facets_obj:
-        logger.error("[FACETS] load_facets_yml returned empty/None for %s (after both schemas)", _abs_path)
-        raise ValueError(f"No facets loaded after normalization — check path/schema: {facets_path}")
+        logger.error("[FACETS] load_facets_yml returned empty for %s", _abs_path)
+        raise ValueError(f"No facets loaded after normalization: {facets_path}")
 
     bucket_names = [d.get("name", f"F{i}") for i, d in enumerate(facets_list)]
     logger.info("[FACETS] bucket_names(head)=%s", bucket_names[:5])
     return facets_obj, bucket_names, tmp_path
 
-# --- 메인 파이프라인 ---
+
+# --- embedding-only pipeline ---
+
 def run_embed_pipeline(
     input_files: List[Path],
     output_dir: Path,
     *,
     save_stem: str,
 ) -> None:
-    """
-    임베딩만 생성하고 캐시 파일로 저장하는 파이프라인.
-    """
+    """Run embedding and cache to disk without clustering."""
     total = len(input_files)
-    logging.info("▶ Starting embedding-only pipeline for %d files", total)
-    
+    logging.info("[PIPELINE] embed-only start: %d files", total)
     embedder: CachingEmbedder = get_embedder(config)
 
     for i, input_file in enumerate(input_files):
         product_id = save_stem or input_file.stem
-        logging.info("--- File %d/%d: %s (Product: %s) ---", i + 1, total, input_file.name, product_id)
-        
-        # 1. 데이터 로드 및 전처리
+        logging.info("[PIPELINE] file %d/%d: %s (product=%s)", i + 1, total, input_file.name, product_id)
+
         df_reviews = load_reviews(input_file)
         df_reviews = preprocess_reviews(df_reviews)
-        
-        # 2. 절 분할 및 ABSA
         df_clauses = split_clauses(df_reviews)
         df_clauses = classify_clauses(df_clauses)
-        
-        # 3. 임베딩
-        logging.info("--- 3. Embedding ---")
-        
-        # 3-1. 임베더 초기화 (캐싱 포함)
-        # 3-2. 임베딩 실행 (캐싱 로직 내장)
-        # clause_id 생성
+
         rid_col = getattr(config, "REVIEW_ID_COL", "review_id")
         df_clauses["clause_idx"] = df_clauses.groupby(rid_col).cumcount()
-        
-        # clause_id 생성: {product_id}_{review_id}_{clause_idx}
         df_clauses["clause_id"] = df_clauses.apply(
             lambda row: f"{product_id}_{row[rid_col]}_{row['clause_idx']}", axis=1
         )
-        
         embedder.embed(
             texts=df_clauses["clause"].tolist(),
             clause_ids=df_clauses["clause_id"].tolist(),
             product_id=product_id,
         )
-        
-        # 임베딩 결과는 CachingEmbedder 내부에서 캐시 파일로 저장됨.
-        # 여기서는 임베딩 벡터를 데이터프레임에 추가할 필요 없이 종료.
-        logging.info("✅ Embedding complete and cached for product: %s", product_id)
-        
-    logging.info("▶ Embedding-only pipeline finished.")
+        logging.info("[PIPELINE] embed cached: %s", product_id)
 
+    logging.info("[PIPELINE] embed-only done")
+
+
+# --- full pipeline ---
 
 def run_full_pipeline(
     input_files: List[Path],
@@ -305,15 +259,15 @@ def run_full_pipeline(
     audit_root: Path | None = None,
 ) -> None:
     total = len(input_files)
-    logging.info("▶ Starting full pipeline for %d files", total)
+    logging.info("[PIPELINE] full start: %d files", total)
     timestamp = datetime.now().strftime("%y%m%d_%H%M%S")
     main_embedder: CachingEmbedder = get_embedder(config)
     last_embed_dim: int | None = None
 
-    # 폴라리티 → 오프셋 베이스
+    # polarity -> label offset base
     base_map = {"negative": 0, "neutral": 1000, "positive": 2000}
 
-    # --- Refinement 준비(옵션) ---
+    # --- refinement setup ---
     refine_enabled_cfg = getattr(config, "REFINEMENT_ENABLED", True)
     refine_enabled = refine_enabled_cfg
     facets_obj = None
@@ -340,12 +294,14 @@ def run_full_pipeline(
         thresholds_path = Path(
             thresholds_path_override or getattr(config, "REFINEMENT_THRESHOLDS_PATH", "rules/thresholds.yml")
         )
-        logging.info("   Refinement config -> facets=%s | thresholds=%s", facets_path, thresholds_path)
+        logging.info("[REFINE] facets=%s | thresholds=%s", facets_path, thresholds_path)
 
         semantic_cfg = getattr(config, "semantic", None)
-        semantic_helper_name = getattr(semantic_cfg, "model", None) or getattr(config, "MODEL_NAME", "jhgan/ko-sbert-sts")
+        semantic_helper_name = (
+            getattr(semantic_cfg, "model", None) or getattr(config, "MODEL_NAME", "jhgan/ko-sbert-sts")
+        )
         semantic_helper_device = getattr(semantic_cfg, "device", None) or getattr(config, "DEVICE", None)
-        logger.info("   Refinement semantic helper: %s on %s", semantic_helper_name, semantic_helper_device or "auto")
+        logger.info("[REFINE] semantic helper: %s on %s", semantic_helper_name, semantic_helper_device or "auto")
 
         facet_embedder = _get_model(semantic_helper_name, semantic_helper_device)
         semantic_helper_model = facet_embedder
@@ -357,10 +313,10 @@ def run_full_pipeline(
             refine_th.update((config_payload.get("refinement") or {}))
 
         head = ", ".join(facet_names[:8]) + ("..." if len(facet_names) > 8 else "")
-        logging.info("   Refinement assets loaded: %d buckets -> %s", len(facet_names), head)
+        logging.info("[REFINE] assets loaded: %d buckets -> %s", len(facet_names), head)
 
     except Exception:
-        logging.exception("   WARNING Refinement disabled (init failed). Check facets/thresholds YAML & schema.")
+        logging.exception("[REFINE] init failed, refinement disabled")
         facets_obj = None
         refine_enabled = False
         semantic_helper_model = None
@@ -374,29 +330,28 @@ def run_full_pipeline(
                 pass
 
     if not refine_enabled_cfg:
-        logging.info("   Refinement is disabled by config.")
+        logging.info("[REFINE] disabled by config")
 
     refine_enabled = refine_enabled_cfg and refine_enabled and (facets_obj is not None)
 
     audit_dir = audit_root or (output_dir / "audit")
     audit_dir.mkdir(parents=True, exist_ok=True)
 
-    # --- 파일 루프 ---
+    # --- per-file loop ---
     for idx, file_path in enumerate(input_files, start=1):
-        logging.info("🔄 [%d/%d] Processing %s", idx, total, file_path.name)
-        stem_effective = (save_stem or file_path.stem)
+        stem_effective = save_stem or file_path.stem
         out_dir = output_dir / stem_effective
         out_dir.mkdir(parents=True, exist_ok=True)
 
         category = config.infer_category(file_path, stem_effective)
-        logging.info("   Category inferred for %s: %s", stem_effective, category)
+        logging.info("[FILE %d/%d] %s | category=%s", idx, total, stem_effective, category)
         facet_config = load_facets_for_category(
             category, sku=stem_effective, fallback=facets_obj
         )
 
-        # 1) Load + preprocess
+        # step 1: load and preprocess
         t0 = time.time()
-        logging.info("   1) Loading & preprocessing reviews…")
+        logging.info("[1] loading & preprocessing")
 
         df = load_reviews(file_path)
 
@@ -409,7 +364,7 @@ def run_full_pipeline(
             if _hit:
                 df = df.rename(columns={_hit: "review"})
             else:
-                raise SystemExit("[load] text column 'review' not found and no fallback candidate present.")
+                raise SystemExit("[load] column 'review' not found and no fallback candidate present")
 
         rid_col = getattr(config, "REVIEW_ID_COL", "review_id")
         if rid_col not in df.columns:
@@ -437,8 +392,7 @@ def run_full_pipeline(
         drop_records: Dict[str, dict] = {}
 
         def _record_drop(mask: pd.Series, stage: str, reason: str) -> None:
-            idxs = audit_base.index[mask]
-            for i in idxs:
+            for i in audit_base.index[mask]:
                 rid = str(audit_base.at[i, rid_col])
                 if rid in drop_records:
                     continue
@@ -455,9 +409,7 @@ def run_full_pipeline(
         def _record_drop_by_ids(ids: set[str], stage: str, reason: str) -> None:
             for rid in ids:
                 rid_str = str(rid)
-                if rid_str in drop_records:
-                    continue
-                if rid_str not in audit_lookup.index:
+                if rid_str in drop_records or rid_str not in audit_lookup.index:
                     continue
                 row = audit_lookup.loc[rid_str]
                 if isinstance(row, pd.DataFrame):
@@ -495,11 +447,11 @@ def run_full_pipeline(
         df = df.reset_index(drop=True)
         input_review_ids = audit_base[rid_col].astype(str).tolist()
 
-        logging.info("      → Loaded %d reviews (%.1fs)", len(df), time.time() - t0)
+        logging.info("[1] done: %d reviews (%.1fs)", len(df), time.time() - t0)
 
-        # 1.5) Clause splitting
+        # step 1.5: clause splitting
         t0 = time.time()
-        logging.info("   1.5) Splitting into clauses…")
+        logging.info("[1.5] splitting into clauses")
         clause_df = split_clauses(
             df, text_col="review",
             connectives=config.CLAUSE_CONNECTIVES,
@@ -508,17 +460,17 @@ def run_full_pipeline(
         fallback_clause_count = 0
         if "clause_source" in clause_df.columns:
             fallback_clause_count = int((clause_df["clause_source"] == "fallback_review").sum())
-        logging.info("      [LOSSLESS] fallback clauses created: %d", fallback_clause_count)
-        logging.info("      → split_clauses done (%d clauses, %.1fs)", len(clause_df), time.time() - t0)
+        logging.info("[1.5] fallback clauses: %d", fallback_clause_count)
+        logging.info("[1.5] done: %d clauses (%.1fs)", len(clause_df), time.time() - t0)
 
-        # 1.6) ABSA
+        # step 1.6: ABSA
         t0 = time.time()
-        logging.info("   1.6) Running ABSA on clauses (batch_size=%d)…", config.ABSA_BATCH_SIZE)
+        logging.info("[1.6] ABSA (batch_size=%d)", config.ABSA_BATCH_SIZE)
         cache_root = Path(getattr(config, "OUTPUT_DIR", "output")) / "cache"
         absa_cache = cache_root / f"{stem_effective}_absa.csv.gz"
         absa_cache.parent.mkdir(parents=True, exist_ok=True)
         if resume and absa_cache.exists():
-            logging.info(" 1.6) Using ABSA cache → %s", absa_cache)
+            logging.info("[1.6] using ABSA cache: %s", absa_cache)
             absa_df = pd.read_csv(absa_cache)
         else:
             raw_absa = classify_clauses(
@@ -532,7 +484,8 @@ def run_full_pipeline(
                 absa_df.to_csv(absa_cache, index=False)
             except Exception:
                 pass
-        logging.info("      ▶ [DEBUG] ABSA polarity counts: %s", absa_df["polarity"].value_counts().to_dict())
+
+        logging.info("[1.6] polarity counts: %s", absa_df["polarity"].value_counts().to_dict())
         if not absa_df.empty:
             pol_series = absa_df["polarity"].astype(str).str.lower().str.strip()
             conf_series = pd.to_numeric(absa_df["confidence"], errors="coerce")
@@ -543,10 +496,7 @@ def run_full_pipeline(
             absa_df["polarity"] = np.where(sentiment_fallback, "neutral", pol_series)
             absa_df["confidence"] = conf_series
             absa_df["sentiment_fallback"] = sentiment_fallback
-            logging.info(
-                "      [LOSSLESS] neutral clauses preserved (missing/low-confidence sentiment): %d",
-                int(sentiment_fallback.sum()),
-            )
+            logging.info("[1.6] neutral fallback (missing/low-conf): %d", int(sentiment_fallback.sum()))
         else:
             absa_df["sentiment_fallback"] = []
 
@@ -561,67 +511,49 @@ def run_full_pipeline(
             _record_drop_by_ids(missing_ids, "exception", "other_exception")
             dropped_ids = [rid for rid in input_review_ids if rid in drop_records and rid not in kept_ids]
             dropped_rows = [drop_records[rid] for rid in dropped_ids]
-            dropped_cols = [
-                "review_id",
-                "raw_len",
-                "cleaned_len",
-                "drop_stage",
-                "drop_reason",
-                "norm_hash",
-                "raw_preview",
-            ]
-            input_path = audit_dir / f"{stem_effective}_input_review_ids.csv"
-            kept_path = audit_dir / f"{stem_effective}_kept_review_ids.csv"
-            dropped_path = audit_dir / f"{stem_effective}_dropped_reviews.csv"
-            pd.DataFrame({rid_col: input_review_ids}).to_csv(input_path, index=False)
+            dropped_cols = ["review_id", "raw_len", "cleaned_len", "drop_stage", "drop_reason", "norm_hash", "raw_preview"]
+            pd.DataFrame({rid_col: input_review_ids}).to_csv(
+                audit_dir / f"{stem_effective}_input_review_ids.csv", index=False)
             pd.DataFrame({rid_col: [rid for rid in input_review_ids if rid in kept_ids]}).to_csv(
-                kept_path,
-                index=False,
-            )
-            pd.DataFrame(dropped_rows, columns=dropped_cols).to_csv(dropped_path, index=False)
+                audit_dir / f"{stem_effective}_kept_review_ids.csv", index=False)
+            pd.DataFrame(dropped_rows, columns=dropped_cols).to_csv(
+                audit_dir / f"{stem_effective}_dropped_reviews.csv", index=False)
 
-        # --- 누적 버퍼 ---
+        # accumulation buffers for polarity loop
         combined_clause_df_list: List[pd.DataFrame] = []
         combined_reps: Dict[int, list] = {}
         combined_kw: Dict[int, list] = {}
-        combined_coords_list: List[np.ndarray] = []  # for visualizer scatter
+        combined_coords_list: List[np.ndarray] = []
 
-        # 1.7) 폴라리티 루프
+        # step 1.7: per-polarity loop
         for pol in ("negative", "neutral", "positive"):
             acc_rows = sum(d.shape[0] for d in combined_clause_df_list)
-            logging.info("   [ACC] accumulated clauses so far: %d", acc_rows)
+            logging.info("[POL] accumulated clauses so far: %d", acc_rows)
 
             if pol == "neutral":
                 sub_df = absa_df[absa_df["polarity"] == pol].reset_index(drop=True)
             else:
                 conf_ok = absa_df["confidence"].fillna(-1) >= config.ABSA_CONFIDENCE_THRESHOLD
                 sub_df = absa_df[(absa_df["polarity"] == pol) & conf_ok].reset_index(drop=True)
-            logging.info("   ▶ [%s] %d/%d clauses selected (thr=%.2f)",
+            logging.info("[POL:%s] %d/%d clauses selected (thr=%.2f)",
                          pol, len(sub_df), len(absa_df), config.ABSA_CONFIDENCE_THRESHOLD)
             if sub_df.empty:
-                logging.info("      ⏭️ [%s] no clauses, skip", pol)
+                logging.info("[POL:%s] no clauses, skip", pol)
                 continue
 
             texts = sub_df["clause"].tolist()
 
-            # 2) Auto‐tune UMAP/HDBSCAN params
+            # step 2: auto-tune UMAP/HDBSCAN params
             tuner_params = get_cluster_params(len(texts), dataset=f"{stem_effective}_{pol}")
             umap_p, hdbscan_p = tuner_params["umap"], tuner_params["hdbscan"]
 
-            # 3) Embedding
+            # step 3: embedding
             emb_t0 = time.time()
-            
-            # 3-2. 임베딩 실행 (캐싱 로직 내장)
-            # clause_id 생성
             rid_col = getattr(config, "REVIEW_ID_COL", "review_id")
             sub_df["clause_idx"] = sub_df.groupby(rid_col).cumcount()
-            
-            # clause_id 생성: {product_id}_{review_id}_{clause_idx}
             sub_df["clause_id"] = sub_df.apply(
                 lambda row: f"{stem_effective}_{row[rid_col]}_{row['clause_idx']}", axis=1
             )
-            
-            # 기존 numpy cache 로직은 제거하고 CachingEmbedder를 사용
             embeddings = main_embedder.embed(
                 texts=sub_df["clause"].tolist(),
                 clause_ids=sub_df["clause_id"].tolist(),
@@ -629,11 +561,9 @@ def run_full_pipeline(
             )
             if embeddings.size:
                 last_embed_dim = int(embeddings.shape[1])
-            
-            # embeddings는 numpy array로 반환됨
-            logging.info("      → [%s] Embeddings shape: %s (%.1fs)", pol, embeddings.shape, time.time() - emb_t0)
+            logging.info("[POL:%s] embeddings: %s (%.1fs)", pol, embeddings.shape, time.time() - emb_t0)
 
-            # 4) UMAP reduction
+            # step 4: UMAP reduction
             red_t0 = time.time()
             coords = reduce_embeddings(
                 embeddings,
@@ -643,9 +573,9 @@ def run_full_pipeline(
                 metric=umap_p["metric"],
                 random_state=umap_p["random_state"],
             )
-            logging.info("      → [%s] Reduced coords shape: %s (%.1fs)", pol, coords.shape, time.time() - red_t0)
+            logging.info("[POL:%s] coords: %s (%.1fs)", pol, coords.shape, time.time() - red_t0)
 
-            # 5) HDBSCAN clustering
+            # step 5: HDBSCAN clustering
             clu_t0 = time.time()
             labels_raw, _ = cluster_embeddings(
                 coords,
@@ -654,18 +584,17 @@ def run_full_pipeline(
                 metric=hdbscan_p["metric"],
                 cluster_selection_epsilon=hdbscan_p["cluster_selection_epsilon"],
             )
-            logging.info("      → [%s] Clustered (%d labels) (%.1fs)", pol, len(labels_raw), time.time() - clu_t0)
+            logging.info("[POL:%s] clustered: %d labels (%.1fs)", pol, len(labels_raw), time.time() - clu_t0)
 
-            # 6) 진단 저장
+            # step 6: evaluate and save diagnostics
             evaluate_clusters(
                 labels_raw.copy(), coords, raw_embeddings=embeddings,
-                output_dir=out_dir, timestamp=timestamp, tag=pol,  # NEW: tag for plot filename
+                output_dir=out_dir, timestamp=timestamp, tag=pol,
             )
-            # accumulate 2D coords for the unified scatter plot
             if coords.ndim == 2 and coords.shape[1] >= 2:
                 combined_coords_list.append(coords[:, :2])
 
-            # 7) 대표 문장
+            # step 7: extract representative sentences
             reps = extract_representatives(
                 texts=texts, embeddings=embeddings,
                 labels=labels_raw, top_k=config.TOP_K_REPRESENTATIVES,
@@ -679,7 +608,7 @@ def run_full_pipeline(
                 except Exception:
                     pass
 
-            # 8) 병합(옵션)
+            # step 8: optional cluster merge
             if getattr(config, "ENABLE_CLUSTER_MERGE", False) and len(reps) >= 2:
                 merge_map, merged_reps, _ = merge_similar_clusters(
                     reps,
@@ -692,7 +621,7 @@ def run_full_pipeline(
                 ], dtype=int)
                 reps = merged_reps
 
-            # 9) 키워드
+            # step 9: keyword extraction
             keyword_model = getattr(getattr(config, "semantic", None), "model", None)
             kw = extract_keywords(reps, model_name=keyword_model)
 
@@ -707,29 +636,26 @@ def run_full_pipeline(
                         show_progress_bar=False,
                     )
                 except Exception:
-                    logging.exception("   [FACETS] clause semantic embedding failed; falling back to main embeddings")
+                    logging.exception("[FACETS] clause semantic embedding failed, using main embeddings")
                     semantic_clause_embs = None
 
-            # 10) Refinement
+            # step 10: refinement
             refined_df = None
             if refine_enabled and (facets_obj is not None):
                 try:
-                    # before snapshot
                     work_df = sub_df.copy()
                     lbl_ser = pd.to_numeric(pd.Series(labels_raw), errors="coerce")
                     n_nan = int(lbl_ser.isna().sum())
                     if n_nan:
-                        logging.warning("   [REFINE] non-numeric labels: %d → coercing to -1", n_nan)
+                        logging.warning("[REFINE] non-numeric labels: %d -> coercing to -1", n_nan)
                     labels_int = lbl_ser.fillna(-1).astype(int)
                     work_df["cluster_label"] = labels_int
 
-                    # normalize embeddings (cosine)
                     clause_emb_source = semantic_clause_embs if semantic_clause_embs is not None else embeddings
                     clause_embs = _normalize_rows(np.asarray(clause_emb_source, dtype=np.float32))
 
-                    # run refinement (NOTE: other_label_value MUST be int -1)
-                    logging.info("   [REFINE] start pol=%s | facets=%d | th(facet)=%.2f",
-                                pol, int(len(facets_obj)), float(refine_th.get("facet_threshold", 0.32)))
+                    logging.info("[REFINE] pol=%s | facets=%d | th=%.2f",
+                                 pol, int(len(facets_obj)), float(refine_th.get("facet_threshold", 0.32)))
 
                     pre_cols = set(work_df.columns)
                     refined_df = refine_clusters(
@@ -742,36 +668,36 @@ def run_full_pipeline(
                         hetero_sil_threshold=float(refine_th.get("hetero_sil_threshold", 0.18)),
                         min_cluster_size_for_split=int(refine_th.get("min_cluster_size_for_split", 40)),
                         max_local_k=int(refine_th.get("max_local_k", 4)),
-                        other_label_value=-1,  # ← 정수 -1로 고정 (중요)
+                        other_label_value=-1,
                         stable_id_prefix=stable_id_prefix_map.get(pol, 0),
                     )
 
-                    post_cols = set(refined_df.columns)
-                    added = sorted([c for c in post_cols - pre_cols])
-                    logging.info("   [REFINE] added_cols=%s", added if added else [])
+                    added = sorted(set(refined_df.columns) - pre_cols)
+                    logging.info("[REFINE] added_cols=%s", added if added else [])
 
-                    # coverage check
-                    cov_col = "facet_top1" if "facet_top1" in refined_df.columns else (
-                            "facet_bucket" if "facet_bucket" in refined_df.columns else None)
+                    cov_col = (
+                        "facet_top1" if "facet_top1" in refined_df.columns
+                        else ("facet_bucket" if "facet_bucket" in refined_df.columns else None)
+                    )
                     if cov_col is None:
                         raise RuntimeError("Refinement returned no facet columns (facet_top1/facet_bucket missing)")
 
                     cov_cnt = int(refined_df[cov_col].notna().sum())
                     tot_cnt = int(refined_df.shape[0])
-                    logging.info("   [REFINE] %s coverage: %d / %d (%.1f%%)",
-                                cov_col, cov_cnt, tot_cnt, 100.0 * (cov_cnt / (tot_cnt or 1)))
+                    logging.info("[REFINE] %s coverage: %d/%d (%.1f%%)",
+                                 cov_col, cov_cnt, tot_cnt, 100.0 * (cov_cnt / (tot_cnt or 1)))
 
                     if cov_cnt == 0:
                         raise RuntimeError("Refinement produced zero facet assignments")
 
                 except Exception:
-                    logging.exception("      [REFINE] failed; fallback to non-refined path")
+                    logging.exception("[REFINE] failed, falling back to non-refined path")
                     refined_df = None
             else:
-                logging.info("   [REFINE] skipped (enabled=%s, facets_obj=%s)", refine_enabled, type(facets_obj).__name__ if facets_obj is not None else None)
+                logging.info("[REFINE] skipped (enabled=%s, facets_obj=%s)",
+                             refine_enabled, type(facets_obj).__name__ if facets_obj is not None else None)
 
-
-            # --- 오프셋 적용 후 통합 ---
+            # apply label offsets and accumulate
             base = base_map[pol]
             labels_off = _offset_labels(labels_raw, base)
             reps_off = _relabel_dict(reps, base)
@@ -779,7 +705,7 @@ def run_full_pipeline(
 
             if refined_df is not None:
                 clause_frame = refined_df.copy()
-                clause_frame["cluster_label"] = labels_off  # offset 적용
+                clause_frame["cluster_label"] = labels_off
                 if "polarity" not in clause_frame.columns:
                     clause_frame["polarity"] = pol
             else:
@@ -797,7 +723,6 @@ def run_full_pipeline(
             )
 
             combined_clause_df_list.append(clause_frame)
-
             combined_reps.update(reps_off)
             combined_kw.update(kw_off)
 
@@ -805,50 +730,50 @@ def run_full_pipeline(
             missing_before_export = absa_ids
             _record_drop_by_ids(missing_before_export, "export_join", "join_missing_before_export")
             _write_audit_files(set())
-            logging.info("   ⏭️ No clauses passed threshold for any polarity — nothing to save.")
-            logging.info("✅ Completed %s (%d/%d)\n", stem_effective, idx, total)
+            logging.info("[PIPELINE] no clauses passed threshold for any polarity, skipping: %s", stem_effective)
+            logging.info("[PIPELINE] done: %s (%d/%d)", stem_effective, idx, total)
             continue
 
-        # -- after concatenation, fail-fast if facet columns missing ------------------
+        # post-loop: facet column validation
         combined_clause_df = pd.concat(combined_clause_df_list, ignore_index=True)
         has_f1 = "facet_top1" in combined_clause_df.columns
         has_fb = "facet_bucket" in combined_clause_df.columns
 
         if not has_f1:
             if has_fb:
-                logging.warning(
-                    "   [WARN] facet_top1 missing but facet_bucket present — copying bucket values"
-                )
+                logging.warning("[CHECK] facet_top1 missing, copying from facet_bucket")
             else:
-                logging.warning(
-                    "   [WARN] No facet columns detected — leaving facet_top1 as nulls"
-                )
+                logging.warning("[CHECK] no facet columns detected, facet_top1 will be null")
             combined_clause_df_list = [_ensure_facet_top1(df) for df in combined_clause_df_list]
             combined_clause_df = pd.concat(combined_clause_df_list, ignore_index=True)
             has_f1 = "facet_top1" in combined_clause_df.columns
             has_fb = "facet_bucket" in combined_clause_df.columns
 
-        logging.info("   [CHECK] combined_clause_df cols=%s", sorted(list(combined_clause_df.columns)))
+        logging.info("[CHECK] combined cols=%s", sorted(list(combined_clause_df.columns)))
         total_rows = len(combined_clause_df)
         if "facet_top1" in combined_clause_df.columns:
             unrouted_mask = combined_clause_df["facet_top1"].astype(str).str.strip().str.lower() == "unrouted"
-            logging.info("   [LOSSLESS] unrouted facet clauses preserved: %d", int(unrouted_mask.sum()))
+            logging.info("[CHECK] unrouted facet clauses: %d", int(unrouted_mask.sum()))
         if has_f1:
             non_null = int(combined_clause_df["facet_top1"].notna().sum())
             non_blank = int(
-                combined_clause_df["facet_top1"].dropna().astype(str).str.strip().replace({"nan": "", "None": ""}).ne("").sum()
+                combined_clause_df["facet_top1"].dropna().astype(str).str.strip()
+                .replace({"nan": "", "None": ""}).ne("").sum()
             )
-            logging.info("   [CHECK] facet_top1 non_null=%d non_blank=%d / total=%d", non_null, non_blank, total_rows)
+            logging.info("[CHECK] facet_top1 non_null=%d non_blank=%d / total=%d", non_null, non_blank, total_rows)
         else:
-            logging.warning("   [CHECK] facet_top1 column not found")
+            logging.warning("[CHECK] facet_top1 column not found")
         if has_fb:
-            logging.info("   [CHECK] facet_bucket nnz=%d / total=%d", int(combined_clause_df["facet_bucket"].notna().sum()), total_rows)
+            logging.info("[CHECK] facet_bucket nnz=%d / total=%d",
+                         int(combined_clause_df["facet_bucket"].notna().sum()), total_rows)
 
-        # 작은 샘플 CSV (보고서 전에 눈으로 바로 봄)
-        keep_cols = [c for c in ["review_id","polarity","cluster_label","refined_cluster_id","facet_top1","confidence","clause"] if c in combined_clause_df.columns]
-        combined_clause_df.head(200)[keep_cols].to_csv(out_dir / f"debug_combined_head_{stem_effective}.csv", index=False, encoding="utf-8-sig")
+        # debug sample CSV
+        keep_cols = [c for c in ["review_id", "polarity", "cluster_label", "refined_cluster_id",
+                                  "facet_top1", "confidence", "clause"] if c in combined_clause_df.columns]
+        combined_clause_df.head(200)[keep_cols].to_csv(
+            out_dir / f"debug_combined_head_{stem_effective}.csv", index=False, encoding="utf-8-sig")
 
-        # Stable IDs
+        # stable IDs
         if getattr(config, "ENABLE_STABLE_IDS", True):
             combined_clause_df, _stable_map = assign_stable_ids(
                 combined_clause_df, combined_reps,
@@ -872,10 +797,10 @@ def run_full_pipeline(
             clause_df=combined_clause_df,
             raw_df=df,
             reps=combined_reps,
-            kw=combined_kw,  # CHANGED: 키워드 전달하여 facet+키워드 기반 대표어 생성
+            kw=combined_kw,
             output_path=report_path,
         )
-        logging.info("      💾 client report saved → %s", report_path.name)
+        logging.info("[EXPORT] client report saved: %s", report_path.name)
 
         save_clauses_summary_json(
             combined_clause_df,
@@ -886,15 +811,11 @@ def run_full_pipeline(
 
         dim = last_embed_dim if last_embed_dim is not None else -1
         write_meta_json(out_dir / "meta.json", model_name=config.embed.model, embed_dim=dim)
-        logging.info("      💾 merged outputs saved")
+        logging.info("[EXPORT] outputs saved")
 
-        # --- 시각화 대시보드 생성 ---
+        # visualization dashboard
         try:
-            combined_2d = (
-                np.vstack(combined_coords_list)
-                if combined_coords_list
-                else None
-            )
+            combined_2d = np.vstack(combined_coords_list) if combined_coords_list else None
             dashboard_path = generate_run_report(
                 stem=stem_effective,
                 timestamp=timestamp,
@@ -905,21 +826,22 @@ def run_full_pipeline(
                 out_dir=out_dir,
                 embeddings_2d=combined_2d,
             )
-            logging.info("      📊 Dashboard saved → %s", dashboard_path.name)
+            logging.info("[VIS] dashboard saved: %s", dashboard_path.name)
         except Exception:
-            logging.exception("      [VIS] Dashboard generation failed (non-fatal)")
+            logging.exception("[VIS] dashboard generation failed (non-fatal)")
 
-        logging.info("✅ Completed %s (%d/%d)\n", stem_effective, idx, total)
+        logging.info("[PIPELINE] done: %s (%d/%d)", stem_effective, idx, total)
 
-# --- CLI 진입점 ---
+
+# --- CLI entry point ---
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Clause-level clustering pipeline runner")
 
-    # 공통 파이프라인 인자
     parser.add_argument("--files", nargs="*", type=Path, default=getattr(config, "INPUT_FILES", []),
-                        help="List of input Excel files")
+                        help="Input Excel files")
     parser.add_argument("--output_dir", type=Path, default=Path(getattr(config, "OUTPUT_DIR", "output")),
-                        help="Directory to save outputs")
+                        help="Output directory")
     parser.add_argument("--resume", action="store_true", help="Reuse caches if present (ABSA, embeddings)")
     parser.add_argument("--facets", type=str, default=None, help="Path to facets YAML (overrides config)")
     parser.add_argument("--thresholds", type=str, default=None, help="Path to thresholds YAML (overrides config)")
@@ -927,49 +849,41 @@ def main() -> None:
                         help="community_filtered: summarize + relevance filter then run standard pipeline")
     parser.add_argument("--all", action="store_true",
                         help="Run all .xlsx under data/{review,community}")
-
-    # 커뮤니티 전처리 인자
-    parser.add_argument("--product", default=None, help="e.g., apple, paprika (for community_filtered)")
+    parser.add_argument("--product", default=None, help="Product key for community_filtered mode")
     parser.add_argument("--community_rules",
                         default=getattr(config, "COMMUNITY_RULES_PATH", "rules/community_rules.yml"))
     parser.add_argument("--rel_tau", type=float,
                         default=getattr(config, "COMMUNITY_REL_TAU", 0.40))
     parser.add_argument("--alias_tau", type=float,
-                        default=getattr(config, "COMMUNITY_ALIAS_TAU", 0.40),
-                        help="별칭 임베딩 유사도 임계값")
+                        default=getattr(config, "COMMUNITY_ALIAS_TAU", 0.40))
     parser.add_argument("--ban_mode", choices=["soft", "strict", "off"],
-                        default=getattr(config, "COMMUNITY_BAN_MODE", "strict"),
-                        help="금칙어 적용 강도")
+                        default=getattr(config, "COMMUNITY_BAN_MODE", "strict"))
     parser.add_argument("--save_filter_debug", action="store_true",
-                        default=getattr(config, "COMMUNITY_SAVE_FILTER_DEBUG", False),
-                        help="필터링 스코어 디버그 CSV 저장")
+                        default=getattr(config, "COMMUNITY_SAVE_FILTER_DEBUG", False))
     parser.add_argument("--summary_max_sentences", type=int,
                         default=getattr(config, "COMMUNITY_SUMMARY_MAX_SENTENCES", 10))
 
     args = parser.parse_args()
 
-    # 규칙/경로 헬퍼
     def _product_key(stem: str) -> str:
         return "".join(ch for ch in stem.lower() if ch.isalnum() or ch == "_")
 
     def _discover_dataset_files():
         base = Path(getattr(config, "DATA_DIR", Path("data")))
         review_dir = getattr(config, "REVIEW_DATA_DIR", base / "review")
-        comm_dir   = getattr(config, "COMMUNITY_DATA_DIR", base / "community")
+        comm_dir = getattr(config, "COMMUNITY_DATA_DIR", base / "community")
         review_files = sorted(p for p in Path(review_dir).glob("*.xlsx") if not p.name.startswith("~$"))
         community_files = sorted(p for p in Path(comm_dir).glob("*.xlsx") if not p.name.startswith("~$"))
         return review_files, community_files
 
-    def _pick_rules_for(product: str, facets_arg: str|None, thr_arg: str|None):
-        """
-        rules/facets_{product}.yml, rules/thresholds_{product}.yml 이 있으면 우선 적용.
-        없으면 CLI 인자 → 없으면 글로벌 기본으로 폴백.
-        """
+    def _pick_rules_for(product: str, facets_arg: str | None, thr_arg: str | None):
+        """Use product-specific rules files if they exist, otherwise fall back to CLI args."""
         f_auto = Path(f"rules/facets_{product}.yml")
         t_auto = Path(f"rules/thresholds_{product}.yml")
-        facets_path = str(f_auto) if f_auto.exists() else facets_arg
-        thr_path    = str(t_auto) if t_auto.exists() else thr_arg
-        return facets_path, thr_path
+        return (
+            str(f_auto) if f_auto.exists() else facets_arg,
+            str(t_auto) if t_auto.exists() else thr_arg,
+        )
 
     def _build_relevance_embedder():
         base_embedder = get_embedder(config).embedder
@@ -997,7 +911,6 @@ def main() -> None:
     output_root = Path(args.output_dir)
     run_output_root = output_root / run_date
 
-    # 로깅
     timestamp = datetime.now().strftime("%y%m%d_%H%M%S")
     log_dir = run_output_root / "logs"
     log_dir.mkdir(exist_ok=True, parents=True)
@@ -1005,22 +918,22 @@ def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s | %(levelname)s | %(message)s",
-        handlers=[logging.FileHandler(log_path, encoding="utf-8"),
-                  logging.StreamHandler(sys.stdout)],
-        force=True
+        handlers=[
+            logging.FileHandler(log_path, encoding="utf-8"),
+            logging.StreamHandler(sys.stdout),
+        ],
+        force=True,
     )
     logging.captureWarnings(True)
-    logging.info("Run output root: %s", run_output_root.as_posix())
+    logging.info("[RUN] output root: %s", run_output_root.as_posix())
 
-    # 매니페스트
     write_run_manifest(run_output_root / "run_manifest.json", config_obj=config)
 
-    # 입력 준비
     files_to_run: List[Path] = list(args.files)
     aliases: List[str] | None = None
     final_output_dir = run_output_root
 
-    # community_filtered 모드(요약→관련성→임시 입력)
+    # community_filtered mode
     if args.mode == "community_filtered":
         try:
             from pipeline.summarizer_comm import summarize_row
@@ -1030,7 +943,7 @@ def main() -> None:
                 dual_score_relevance, keep_mask_gated
             )
         except Exception as e:
-            raise SystemExit(f"[community_filtered] 필요한 모듈이 없습니다: {e}")
+            raise SystemExit(f"[community_filtered] required module missing: {e}")
 
         rules_path = Path(args.community_rules)
         if not rules_path.exists():
@@ -1039,7 +952,7 @@ def main() -> None:
 
         product = (args.product or "").strip().lower()
         if not product:
-            raise SystemExit("[community_filtered] --product 가 필요합니다. 예: --product apple")
+            raise SystemExit("[community_filtered] --product is required")
 
         aliases = (rules.get("products", {}).get(product, {}) or {}).get("aliases", []) or []
         facets: Dict[str, List[str]] = (rules.get("facets", {}) or {})
@@ -1049,7 +962,7 @@ def main() -> None:
         posts = [load_posts(p, product=product) for p in files_to_run]
         dfp = pd.concat(posts, ignore_index=True) if posts else pd.DataFrame()
         if dfp.empty:
-            raise SystemExit("[community_filtered] 입력 게시글이 비어 있습니다.")
+            raise SystemExit("[community_filtered] no input posts found")
 
         rows = []
         for _, r in dfp.iterrows():
@@ -1064,7 +977,7 @@ def main() -> None:
                 "date": r.get("date"), "product": r["product"], "sentences": [str(s) for s in sents]
             })
         if not rows:
-            raise SystemExit("[community_filtered] 요약 결과가 없습니다.")
+            raise SystemExit("[community_filtered] no summarized rows")
 
         embedder = _build_relevance_embedder()
         alias_q = build_alias_queries(aliases)
@@ -1076,7 +989,7 @@ def main() -> None:
                 flat_sents.append(s)
                 owners.append(row)
         if not flat_sents:
-            raise SystemExit("[community_filtered] 요약 문장이 없습니다.")
+            raise SystemExit("[community_filtered] no summarized sentences")
 
         alias_sim, facet_sim, total = dual_score_relevance(flat_sents, alias_q, facet_q, embedder, facet_terms_flat)
         mask = keep_mask_gated(
@@ -1091,17 +1004,15 @@ def main() -> None:
             if not ok:
                 continue
             kept.append({
-                "platform": ow["platform"],
-                "product": ow["product"],
-                "date": ow.get("date"),
-                "review": sent,
-                "review_id": f"{ow['post_id']}-s{serial}",
-                "link": ow["link"],
-                "source_type": "community"
+                "platform": ow["platform"], "product": ow["product"], "date": ow.get("date"),
+                "review": sent, "review_id": f"{ow['post_id']}-s{serial}",
+                "link": ow["link"], "source_type": "community"
             })
         kept_df = pd.DataFrame(kept)
         if kept_df.empty:
-            raise SystemExit(f"[community_filtered] 관련성 임계 통과 문장이 없습니다. (tau={args.rel_tau}, alias_tau={args.alias_tau})")
+            raise SystemExit(
+                f"[community_filtered] no sentences passed filter (tau={args.rel_tau}, alias_tau={args.alias_tau})"
+            )
 
         out_root = run_output_root / f"{product}_community"
         out_root.mkdir(parents=True, exist_ok=True)
@@ -1110,22 +1021,24 @@ def main() -> None:
 
         stats_path = out_root / "community_filter_stats.csv"
         base_df = pd.DataFrame({
-            "review":  flat_sents,
+            "review": flat_sents,
             "alias_sim": alias_sim,
             "facet_sim": facet_sim,
-            "total":     total,
-            "kept":      mask.astype(int),
+            "total": total,
+            "kept": mask.astype(int),
             "lex_alias_hit": [int(any(a in s for a in aliases)) for s in flat_sents],
-            "banned_hit":    [int(any(b in s for b in ban_terms)) for s in flat_sents],
+            "banned_hit": [int(any(b in s for b in ban_terms)) for s in flat_sents],
         })
         summ = {
             "total_sentences": len(base_df),
-            "kept_sentences":  int(base_df["kept"].sum()),
-            "keep_rate":       float(base_df["kept"].mean()) if len(base_df) else 0.0,
+            "kept_sentences": int(base_df["kept"].sum()),
+            "keep_rate": float(base_df["kept"].mean()) if len(base_df) else 0.0,
             "alias_hit_rate_all": float(base_df["lex_alias_hit"].mean()) if len(base_df) else 0.0,
-            "alias_hit_rate_kept": float(base_df.loc[base_df["kept"]==1, "lex_alias_hit"].mean())
-                                   if (base_df["kept"]==1).any() else 0.0,
-            "banned_excluded": int(((base_df["banned_hit"]==1) & (base_df["kept"]==0)).sum()),
+            "alias_hit_rate_kept": (
+                float(base_df.loc[base_df["kept"] == 1, "lex_alias_hit"].mean())
+                if (base_df["kept"] == 1).any() else 0.0
+            ),
+            "banned_excluded": int(((base_df["banned_hit"] == 1) & (base_df["kept"] == 0)).sum()),
             "rel_tau": float(args.rel_tau),
             "alias_tau": float(args.alias_tau),
             "ban_mode": str(args.ban_mode),
@@ -1137,20 +1050,18 @@ def main() -> None:
         files_to_run = [tmp_input]
         final_output_dir = out_root
 
-    # 자동 실행: 인자를 안 주면 리뷰+커뮤니티 전량 실행
-    if args.all or (not args.files and args.mode == "default" and (args.product is None)):
+    # auto mode: run all xlsx under data/review and data/community
+    if args.all or (not args.files and args.mode == "default" and args.product is None):
         review_files, community_files = _discover_dataset_files()
         if not review_files and not community_files:
-            raise SystemExit("data/review, data/community 하위에 .xlsx가 없습니다.")
+            raise SystemExit("No .xlsx files found under data/review or data/community")
 
-        # 리뷰 전량
         for f in review_files:
             name = _product_key(f.stem)
             facets_path, thres_path = _pick_rules_for(name, args.facets, args.thresholds)
-            logging.info(f"▶ [AUTO] Review run → {name}")
+            logging.info("[AUTO] review run: %s", name)
             run_full_pipeline(
-                [f],
-                run_output_root,
+                [f], run_output_root,
                 resume=args.resume,
                 facets_path_override=facets_path,
                 thresholds_path_override=thres_path,
@@ -1159,7 +1070,6 @@ def main() -> None:
                 audit_root=run_output_root / "audit",
             )
 
-        # 커뮤니티 전량
         if community_files:
             try:
                 from pipeline.summarizer_comm import summarize_row
@@ -1169,7 +1079,7 @@ def main() -> None:
                     dual_score_relevance, keep_mask_gated,
                 )
             except Exception as e:
-                raise SystemExit(f"[auto] 커뮤니티 모듈 임포트 실패: {e}")
+                raise SystemExit(f"[auto] community module import failed: {e}")
 
             rules_path = Path(args.community_rules)
             if not rules_path.exists():
@@ -1178,7 +1088,7 @@ def main() -> None:
 
             for f in community_files:
                 product = _product_key(f.stem)
-                logging.info(f"▶ [AUTO] Community run → {product}")
+                logging.info("[AUTO] community run: %s", product)
 
                 aliases = (rules.get("products", {}).get(product, {}) or {}).get("aliases", []) or []
                 facets: Dict[str, List[str]] = (rules.get("facets", {}) or {})
@@ -1187,25 +1097,24 @@ def main() -> None:
 
                 dfp = load_posts(f, product=product)
                 if dfp.empty:
-                    logging.warning(f"[auto] 빈 파일 → {f.name}, skip")
+                    logging.warning("[AUTO] empty file, skip: %s", f.name)
                     continue
 
                 rows = []
                 for _, r in dfp.iterrows():
-                    sents = summarize_row(r.get("title",""), r.get("body",""), r.get("summary",""),
-                                          max_sentences=args.summary_max_sentences)
+                    sents = summarize_row(
+                        r.get("title", ""), r.get("body", ""), r.get("summary", ""),
+                        max_sentences=args.summary_max_sentences
+                    )
                     if not sents:
                         continue
                     rows.append({
-                        "post_id": r["post_id"],
-                        "platform": r["platform"],
-                        "link": r["link"],
-                        "date": r.get("date"),
-                        "product": r["product"],
+                        "post_id": r["post_id"], "platform": r["platform"], "link": r["link"],
+                        "date": r.get("date"), "product": r["product"],
                         "sentences": [str(s) for s in sents]
                     })
                 if not rows:
-                    logging.warning(f"[auto] 요약 결과 없음 → {f.name}, skip")
+                    logging.warning("[AUTO] no summarized rows, skip: %s", f.name)
                     continue
 
                 embedder = _build_relevance_embedder()
@@ -1218,10 +1127,12 @@ def main() -> None:
                         flat_sents.append(s)
                         owners.append(row)
                 if not flat_sents:
-                    logging.warning(f"[auto] 요약 문장 없음 → {f.name}, skip")
+                    logging.warning("[AUTO] no summarized sentences, skip: %s", f.name)
                     continue
 
-                alias_sim, facet_sim, total = dual_score_relevance(flat_sents, alias_q, facet_q, embedder, facet_terms_flat)
+                alias_sim, facet_sim, total = dual_score_relevance(
+                    flat_sents, alias_q, facet_q, embedder, facet_terms_flat
+                )
                 mask = keep_mask_gated(
                     flat_sents, alias_sim, facet_sim, total,
                     tau=args.rel_tau, alias_tau=args.alias_tau,
@@ -1234,17 +1145,13 @@ def main() -> None:
                     if not ok:
                         continue
                     kept.append({
-                        "platform": ow["platform"],
-                        "product": ow["product"],
-                        "date": ow.get("date"),
-                        "review": sent,
-                        "review_id": f"{ow['post_id']}-s{serial}",
-                        "link": ow["link"],
-                        "source_type": "community"
+                        "platform": ow["platform"], "product": ow["product"], "date": ow.get("date"),
+                        "review": sent, "review_id": f"{ow['post_id']}-s{serial}",
+                        "link": ow["link"], "source_type": "community"
                     })
                 kept_df = pd.DataFrame(kept)
                 if kept_df.empty:
-                    logging.warning(f"[auto] 필터 통과 문장 없음 → {f.name}, skip")
+                    logging.warning("[AUTO] no sentences passed filter, skip: %s", f.name)
                     continue
 
                 out_root = run_output_root / f"{product}_community"
@@ -1252,37 +1159,36 @@ def main() -> None:
                 tmp_input = out_root / "community_kept_input.xlsx"
                 kept_df.to_excel(tmp_input, index=False)
 
-                stats_path = out_root / "community_filter_stats.csv"
                 base_df = pd.DataFrame({
-                    "review":  flat_sents,
+                    "review": flat_sents,
                     "alias_sim": alias_sim,
                     "facet_sim": facet_sim,
-                    "total":     total,
-                    "kept":      mask.astype(int),
+                    "total": total,
+                    "kept": mask.astype(int),
                     "lex_alias_hit": [int(any(a in s for a in aliases)) for s in flat_sents],
-                    "banned_hit":    [int(any(b in s for b in ban_terms)) for s in flat_sents],
+                    "banned_hit": [int(any(b in s for b in ban_terms)) for s in flat_sents],
                 })
                 summ = {
                     "total_sentences": len(base_df),
-                    "kept_sentences":  int(base_df["kept"].sum()),
-                    "keep_rate":       float(base_df["kept"].mean()) if len(base_df) else 0.0,
+                    "kept_sentences": int(base_df["kept"].sum()),
+                    "keep_rate": float(base_df["kept"].mean()) if len(base_df) else 0.0,
                     "alias_hit_rate_all": float(base_df["lex_alias_hit"].mean()) if len(base_df) else 0.0,
-                    "alias_hit_rate_kept": float(base_df.loc[base_df["kept"]==1, "lex_alias_hit"].mean())
-                                           if (base_df["kept"]==1).any() else 0.0,
-                    "banned_excluded": int(((base_df["banned_hit"]==1) & (base_df["kept"]==0)).sum()),
+                    "alias_hit_rate_kept": (
+                        float(base_df.loc[base_df["kept"] == 1, "lex_alias_hit"].mean())
+                        if (base_df["kept"] == 1).any() else 0.0
+                    ),
+                    "banned_excluded": int(((base_df["banned_hit"] == 1) & (base_df["kept"] == 0)).sum()),
                     "rel_tau": float(args.rel_tau),
                     "alias_tau": float(args.alias_tau),
                     "ban_mode": str(args.ban_mode),
                 }
-                pd.DataFrame([summ]).to_csv(stats_path, index=False)
+                pd.DataFrame([summ]).to_csv(out_root / "community_filter_stats.csv", index=False)
                 if args.save_filter_debug:
                     base_df.to_csv(out_root / "community_filter_debug.csv", index=False, encoding="utf-8-sig")
 
                 facets_path, thres_path = _pick_rules_for(product, args.facets, args.thresholds)
-
                 run_full_pipeline(
-                    [tmp_input],
-                    out_root,
+                    [tmp_input], out_root,
                     resume=args.resume,
                     facets_path_override=facets_path,
                     thresholds_path_override=thres_path,
@@ -1291,19 +1197,20 @@ def main() -> None:
                     audit_root=run_output_root / "audit",
                 )
 
-        logging.info("🎉 AUTO: review + community 전체 실행 완료")
+        logging.info("[AUTO] all runs complete")
         return
 
-    # 표준 절-단위 파이프라인 실행
+    # standard run
     run_full_pipeline(
         files_to_run,
-        (final_output_dir if args.mode == "community_filtered" else run_output_root),
+        final_output_dir if args.mode == "community_filtered" else run_output_root,
         resume=args.resume,
         facets_path_override=args.facets,
         thresholds_path_override=args.thresholds,
-        alias_terms=(aliases if args.mode == "community_filtered" else None),
+        alias_terms=aliases if args.mode == "community_filtered" else None,
         audit_root=run_output_root / "audit",
     )
+
 
 if __name__ == "__main__":
     main()

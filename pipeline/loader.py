@@ -47,7 +47,7 @@ def load_reviews(
         df = df[config.REQUIRED_COLUMNS].copy()
 
     logger.info(
-        "✅ Loaded %s rows • columns: %s",
+        "[LOAD] loaded %s rows, columns: %s",
         f"{len(df):,}",
         ", ".join(df.columns),
     )

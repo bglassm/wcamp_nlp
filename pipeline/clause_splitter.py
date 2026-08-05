@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Connective dictionaries (Korean)
-#   NOTE: We do not split on short 1~2-char endings by default except in
+#   Short 1~2-char endings are not split by default except in
 #   explicit enumeration patterns (…도 …고 …도 …)
 # ---------------------------------------------------------------------------
 CONN = {

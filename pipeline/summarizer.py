@@ -176,7 +176,7 @@ def extract_representatives(
         except (ValueError, TypeError):
             continue
     cluster_ids = sorted(cluster_ids)
-    logger.info("🔎 Extracting representatives for %d clusters (top_k=%d, lambda=%.2f)", len(cluster_ids), final_top_k, lambda_mult)
+    logger.info("[REPS] extracting for %d clusters (top_k=%d, lambda=%.2f)", len(cluster_ids), final_top_k, lambda_mult)
 
     semantic_model = _load_semantic_helper()
     semantic_embeddings = _get_semantic_embeddings(texts, embeddings, semantic_model)

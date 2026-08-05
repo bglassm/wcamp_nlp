@@ -1,5 +1,5 @@
-import argparse  # NEW: CLI 인자 파싱 추가
-import logging  # NEW: INFO 로깅 추가
+import argparse
+import logging
 import time
 from datetime import datetime
 from pathlib import Path
@@ -7,22 +7,23 @@ import pandas as pd
 
 RUN_DATE = datetime.now().strftime("%Y%m%d")
 
-# 분석 결과를 모아둘 폴더: output/<YYYYMMDD>/analysis
 OUTPUT_ROOT = Path("output") / RUN_DATE
 ANALYSIS_DIR = OUTPUT_ROOT / "analysis"
 ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
 
-logger = logging.getLogger(__name__)  # NEW: INFO 로깅용 로거
+logger = logging.getLogger(__name__)
 
 
-def _cluster_timestamp_key(p: Path) -> str:  # NEW: 파일명 타임스탬프 파싱
+def _cluster_timestamp_key(p: Path) -> str:
+    """Extract timestamp suffix from a clustered output filename."""
     parts = p.stem.split("_")
     if len(parts) >= 2:
         return "_".join(parts[-2:])
     return ""
 
 
-def _select_latest_file(files):  # NEW: 타임스탬프 우선, 실패 시 mtime 최신
+def _select_latest_file(files):
+    """Return the file with the most recent timestamp in its name, falling back to mtime."""
     keyed = {p: _cluster_timestamp_key(p) for p in files}
     timestamped = {p: ts for p, ts in keyed.items() if ts}
     if timestamped:
@@ -30,32 +31,26 @@ def _select_latest_file(files):  # NEW: 타임스탬프 우선, 실패 시 mtime
     return max(files, key=lambda p: p.stat().st_mtime)
 
 
-def load_all_clauses(strategy="latest"):  # CHANGED: strategy 파라미터 추가
+def load_all_clauses(strategy="latest"):
     """
-    output/<YYYYMMDD>/<sku>/<sku>_clauses_clustered_*.xlsx 파일을 모아 DataFrame을 만듭니다.
+    Collect clause workbooks from output/<YYYYMMDD>/<sku>/ and return a combined DataFrame.
 
-    strategy="latest" → sku별 최신 파일 1개만 사용 (기본값)
-    strategy="all" → sku별 모든 clustered 파일 사용
+    strategy="latest" : use only the most recent file per SKU (default)
+    strategy="all"    : use all clustered files per SKU
     """
     base = OUTPUT_ROOT
     clause_files = []
 
-    # sku 디렉토리 순회
     for sku_dir in base.iterdir():
         if not sku_dir.is_dir():
             continue
-
-        # sku명
         sku = sku_dir.name
-
-        # 파일 패턴 수집
         files = list(sku_dir.glob(f"{sku}_clauses_clustered_*.xlsx"))
         if not files:
             continue
-
-        if strategy == "all":  # NEW: 모든 파일 사용
+        if strategy == "all":
             clause_files.extend(files)
-        elif strategy == "latest":  # NEW: 최신 파일만 선택
+        elif strategy == "latest":
             clause_files.append(_select_latest_file(files))
         else:
             raise ValueError(f"Unknown strategy: {strategy}")
@@ -67,9 +62,7 @@ def load_all_clauses(strategy="latest"):  # CHANGED: strategy 파라미터 추�
     skus = {p.parent.name for p in clause_files}
     logger.info(
         "Found %d clustered clause workbooks across %d SKUs (strategy=%s); sample=%s",
-        len(clause_files),
-        len(skus),
-        strategy,
+        len(clause_files), len(skus), strategy,
         [p.name for p in clause_files[:5]],
     )
 
@@ -79,18 +72,13 @@ def load_all_clauses(strategy="latest"):  # CHANGED: strategy 파라미터 추�
         sku = path.parent.name
         try:
             df = pd.read_excel(path)
-        except Exception as e:
+        except Exception:
             logger.exception("Failed to read %s", path)
             continue
-
-        # sku 컬럼이 없으면 채운다
         if "sku" not in df.columns:
             df["sku"] = sku
-
-        # polarity 정규화
         if "polarity" in df.columns:
             df["polarity"] = df["polarity"].astype(str).str.lower()
-
         frames.append(df)
         logger.info("Loaded %d clauses from %s", len(df), path.name)
 
@@ -103,13 +91,9 @@ def load_all_clauses(strategy="latest"):  # CHANGED: strategy 파라미터 추�
 
 def compute_facet_bucket_stats(df):
     """
-    카테고리/sku/facet_bucket 단위로:
-      - n_clauses
-      - n_reviews
-      - share_of_sku (해당 sku negative 절 중 비율)
-    을 계산해서 output/<YYYYMMDD>/analysis/facet_bucket_stats.csv 로 저장합니다.
+    Compute per-category/sku/facet_bucket clause and review counts.
+    Outputs: output/<YYYYMMDD>/analysis/facet_bucket_stats.csv
     """
-    # 우선 negative만 본다
     if "polarity" in df.columns:
         neg = df[df["polarity"].isin(["negative", "neg"])].copy()
     else:
@@ -121,8 +105,6 @@ def compute_facet_bucket_stats(df):
             logger.warning("required column '%s' missing; stats may be incomplete.", col)
 
     facet_bucket_col = "facet_bucket" if "facet_bucket" in neg.columns else None
-
-    # category 없으면 임시로 unknown
     category_col = "category" if "category" in neg.columns else None
     if category_col is None:
         neg["category"] = "unknown"
@@ -132,41 +114,28 @@ def compute_facet_bucket_stats(df):
     if facet_bucket_col is not None:
         group_keys.append(facet_bucket_col)
 
-    # sku/category별 전체 negative 절 수
     total = (
         neg.groupby([category_col, "sku"])["clause"]
         .size()
         .reset_index(name="n_clauses_total")
     )
-
-    # facet_bucket별 통계
     stats = (
         neg.groupby(group_keys)
-        .agg(
-            n_clauses=("clause", "size"),
-            n_reviews=("review_id", "nunique"),
-        )
+        .agg(n_clauses=("clause", "size"), n_reviews=("review_id", "nunique"))
         .reset_index()
     )
-
-    stats = stats.merge(
-        total,
-        on=[category_col, "sku"],
-        how="left",
-    )
+    stats = stats.merge(total, on=[category_col, "sku"], how="left")
     stats["share_of_sku"] = stats["n_clauses"] / stats["n_clauses_total"]
 
     out_path = ANALYSIS_DIR / "facet_bucket_stats.csv"
     stats.to_csv(out_path, index=False)
-    logger.info("Saved facet_bucket_stats → %s (shape=%s)", out_path, stats.shape)
+    logger.info("Saved facet_bucket_stats: %s (shape=%s)", out_path, stats.shape)
 
 
 def compute_facet_vs_bucket_cross(df):
     """
-    category/sku/facet_top1/facet_bucket 조합별 절 수를 세서
-    output/<YYYYMMDD>/analysis/facet_vs_bucket_cross.csv 로 저장합니다.
-    → semantic facet_top1은 freshness/size_quantity 등,
-      facet_bucket은 freshness_negative/unmatched_negative 같은 값.
+    Count clauses per (category, sku, facet_top1, facet_bucket) combination.
+    Outputs: output/<YYYYMMDD>/analysis/facet_vs_bucket_cross.csv
     """
     if "polarity" in df.columns:
         neg = df[df["polarity"].isin(["negative", "neg"])].copy()
@@ -195,16 +164,13 @@ def compute_facet_vs_bucket_cross(df):
 
     out_path = ANALYSIS_DIR / "facet_vs_bucket_cross.csv"
     cross.to_csv(out_path, index=False)
-    logger.info("Saved facet_vs_bucket_cross → %s (shape=%s)", out_path, cross.shape)
+    logger.info("Saved facet_vs_bucket_cross: %s (shape=%s)", out_path, cross.shape)
 
 
 def compute_bucket_samples(df, samples_per_combo=50, random_state=42):
     """
-    각 (category, sku, facet_top1, facet_bucket) 조합마다
-    최대 samples_per_combo개씩 절을 샘플링해서
-    output/<YYYYMMDD>/analysis/bucket_example_samples.csv 로 저장합니다.
-
-    → 여기 들어있는 문장들을 가지고 YAML facet 키워드를 튜닝할 수 있습니다.
+    Sample up to samples_per_combo clauses per (category, sku, facet_top1, facet_bucket).
+    Outputs: output/<YYYYMMDD>/analysis/bucket_example_samples.csv
     """
     if "polarity" in df.columns:
         neg = df[df["polarity"].isin(["negative", "neg"])].copy()
@@ -221,8 +187,7 @@ def compute_bucket_samples(df, samples_per_combo=50, random_state=42):
             neg[col] = None
 
     groups = neg.groupby(
-        [category_col, "sku", "facet_top1", "facet_bucket"],
-        dropna=False,
+        [category_col, "sku", "facet_top1", "facet_bucket"], dropna=False
     )
 
     sampled_frames = []
@@ -232,10 +197,8 @@ def compute_bucket_samples(df, samples_per_combo=50, random_state=42):
         n = min(samples_per_combo, len(g))
         sample = g.sample(n=n, random_state=random_state)
         sampled_frames.append(
-            sample[
-                [category_col, "sku", "facet_top1", "facet_bucket",
-                 "polarity", "review_id", "clause"]
-            ]
+            sample[[category_col, "sku", "facet_top1", "facet_bucket",
+                    "polarity", "review_id", "clause"]]
         )
 
     if not sampled_frames:
@@ -245,18 +208,16 @@ def compute_bucket_samples(df, samples_per_combo=50, random_state=42):
     samples_df = pd.concat(sampled_frames, ignore_index=True)
     out_path = ANALYSIS_DIR / "bucket_example_samples.csv"
     samples_df.to_csv(out_path, index=False)
-    logger.info(
-        "Saved bucket_example_samples → %s (shape=%s)", out_path, samples_df.shape
-    )
+    logger.info("Saved bucket_example_samples: %s (shape=%s)", out_path, samples_df.shape)
 
 
-def main():  # CHANGED: argparse 적용 및 strategy 전달
+def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--strategy",
         choices=["latest", "all"],
         default="latest",
-        help="clustered 파일 로딩 전략 (default: latest)",
+        help="file loading strategy per SKU (default: latest)",
     )
     args = parser.parse_args()
 

@@ -261,7 +261,7 @@ def save_results(df: pd.DataFrame, sku: str) -> Path:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     out_path = OUTPUT_DIR / f"{sku}_tuning_results.csv"
     df.to_csv(out_path, index=False, encoding="utf-8-sig")
-    logger.info("💾 Saved tuning results → %s", out_path)
+    logger.info("[TUNE] results saved: %s", out_path)
     return out_path
 
 
@@ -284,13 +284,13 @@ def main() -> None:
         try:
             emb = load_embeddings(sku)
         except FileNotFoundError:
-            logger.warning("❌ Missing precomputed embeddings for %s. Skipping.", sku)
+            logger.warning("[TUNE] missing embeddings for %s, skip", sku)
             continue
         emb = sample_embeddings(emb, args.n_samples, random_sample=args.random_sample)
         if emb.size == 0:
             logger.warning("No embeddings available after sampling for %s. Skipping.", sku)
             continue
-        logger.info("🔢 Running sweep for %s with %d samples", sku, emb.shape[0])
+        logger.info("[TUNE] sweep for %s with %d samples", sku, emb.shape[0])
         df = run_sweep_for_sku(sku, emb)
         save_results(df, sku)
 
