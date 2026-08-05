@@ -59,6 +59,7 @@ from pipeline.refiner import (
     apply_facet_routing,
 )
 from utils.runmeta import write_run_manifest, write_meta_json
+from pipeline.visualizer import generate_run_report
 
 # from sentence_transformers import SentenceTransformer # Not needed here anymore, moved to embedder.py
 
@@ -583,6 +584,7 @@ def run_full_pipeline(
         combined_clause_df_list: List[pd.DataFrame] = []
         combined_reps: Dict[int, list] = {}
         combined_kw: Dict[int, list] = {}
+        combined_coords_list: List[np.ndarray] = []  # for visualizer scatter
 
         # 1.7) 폴라리티 루프
         for pol in ("negative", "neutral", "positive"):
@@ -659,6 +661,9 @@ def run_full_pipeline(
                 labels_raw.copy(), coords, raw_embeddings=embeddings,
                 output_dir=out_dir, timestamp=timestamp, tag=pol,  # NEW: tag for plot filename
             )
+            # accumulate 2D coords for the unified scatter plot
+            if coords.ndim == 2 and coords.shape[1] >= 2:
+                combined_coords_list.append(coords[:, :2])
 
             # 7) 대표 문장
             reps = extract_representatives(
@@ -882,6 +887,27 @@ def run_full_pipeline(
         dim = last_embed_dim if last_embed_dim is not None else -1
         write_meta_json(out_dir / "meta.json", model_name=config.embed.model, embed_dim=dim)
         logging.info("      💾 merged outputs saved")
+
+        # --- 시각화 대시보드 생성 ---
+        try:
+            combined_2d = (
+                np.vstack(combined_coords_list)
+                if combined_coords_list
+                else None
+            )
+            dashboard_path = generate_run_report(
+                stem=stem_effective,
+                timestamp=timestamp,
+                clause_df=combined_clause_df,
+                raw_df=df,
+                reps=combined_reps,
+                kw=combined_kw,
+                out_dir=out_dir,
+                embeddings_2d=combined_2d,
+            )
+            logging.info("      📊 Dashboard saved → %s", dashboard_path.name)
+        except Exception:
+            logging.exception("      [VIS] Dashboard generation failed (non-fatal)")
 
         logging.info("✅ Completed %s (%d/%d)\n", stem_effective, idx, total)
 
