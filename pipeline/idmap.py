@@ -75,6 +75,7 @@ def assign_stable_ids(
     signatures = state["sig2id"]
     used = set(signatures.values())
     stable_map = {}
+    signature_owners = {}
     for cid in sorted(ids.unique()):
         cid = int(cid)
         if cid == -1:
@@ -85,6 +86,12 @@ def assign_stable_ids(
             stable_map[cid] = cid
             continue
         signature = _signature_for_cluster(cid, reps)
+        if signature in signature_owners:
+            raise ValueError(
+                "Ambiguous stable-ID signature: distinct clusters in one polarity "
+                "share the same representatives; state was not changed"
+            )
+        signature_owners[signature] = cid
         if signature not in signatures:
             base = polarity * 1000
             available = next((base + offset for offset in range(999) if base + offset not in used), None)

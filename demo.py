@@ -112,9 +112,10 @@ class CharacterTfidfEmbedder(Embedder):
     def __init__(self, corpus: list[str]):
         ordered_corpus = sorted(corpus)
         serialized = json.dumps(ordered_corpus, ensure_ascii=False, separators=(",", ":"))
-        # A valid one-character negative input (e.g. "늦") has no bigrams.
-        self.ngram_range = (2, 4) if any(len(text.strip()) >= 2 for text in ordered_corpus) else (1, 1)
-        self.model_name = f"char-tfidf-{self.ngram_range[0]}-{self.ngram_range[1]}-v1-" + hashlib.sha256(serialized.encode()).hexdigest()
+        # Any one-character clause (e.g. "늦") needs unigrams, including when
+        # longer clauses exist beside it. Otherwise its vector is silently zero.
+        self.ngram_range = (1, 4) if any(len(text.strip()) < 2 for text in ordered_corpus) else (2, 4)
+        self.model_name = f"char-tfidf-{self.ngram_range[0]}-{self.ngram_range[1]}-v2-" + hashlib.sha256(serialized.encode()).hexdigest()
         self.vectorizer = TfidfVectorizer(analyzer="char", ngram_range=self.ngram_range, norm="l2", dtype=np.float32)
         self.vectorizer.fit(ordered_corpus)
         self.calls = 0

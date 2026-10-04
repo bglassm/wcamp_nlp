@@ -19,9 +19,11 @@ PATTERNS = (
 )
 EXTRA = (
     "validation/before.txt", "validation/after.txt", "validation/environment.txt",
+    "validation/refinement-before.txt", "validation/edge-cases.txt",
     "examples/synthetic_reviews.json", "examples/sample-result.json",
     "examples/sample-report.html", "docs/publication-audit.json",
-    "tools/reproduce_legacy_bugs.py", "tools/build_showcase.py",
+    "tools/reproduce_legacy_bugs.py", "tools/reproduce_refinement_bugs.py",
+    "tools/check_demo_edges.py", "tools/build_showcase.py",
     "tools/merge_all.py", "tools/resolve_rules.py",
 )
 

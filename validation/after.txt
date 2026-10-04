@@ -1,14 +1,15 @@
 Command: bash run_demo.sh
-Fresh Python virtual environment; demo CLI reuses the prior synthetic cache.
-Captured: 2026-10-04T07:56:36.136954+00:00
+Python environment and synthetic cache reused after focused follow-up repairs.
+Captured: 2026-10-04T09:51:47.025505+00:00
 
 Synthetic-only verification; no original reviews or external model calls.
 Python 3.11.15
-.......................................................                  [100%]
-55 passed in 41.27s
+........................................................................ [ 83%]
+..............                                                           [100%]
+86 passed in 3.71s
 Optional stopword file not found: stopwords_ko.txt — using core list only
 INFO synthetic_demo [DEMO] reviews=16 clauses=31 negative=13
-INFO pipeline.embedder [EMBED] cache key: 7f3ecc8eb8c8895a
+INFO pipeline.embedder [EMBED] cache key: 6c23c08c34ec86ce
 INFO pipeline.embedder [EMBED] cache: 16 hit rows, 0 unique misses
 INFO pipeline.embedder [EMBED] final shape: (16, 623)
 INFO pipeline.embedder [EMBED] cache: 2 hit rows, 0 unique misses

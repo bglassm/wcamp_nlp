@@ -43,3 +43,16 @@ def test_corrupt_state_fails_without_overwrite(tmp_path):
     with pytest.raises(ValueError, match="duplicate"):
         assign_stable_ids(pd.DataFrame({"cluster_label": [0]}), {}, state_path=state_path)
     assert state_path.read_bytes() == original
+
+
+def test_ambiguous_same_polarity_representatives_do_not_silently_merge_ids(tmp_path):
+    state_path = tmp_path / "ids.json"
+    assign_stable_ids(pd.DataFrame({"cluster_label": [0]}), {0: ["합성 동일 대표"]}, state_path=state_path)
+    previous = state_path.read_bytes()
+    with pytest.raises(ValueError, match="Ambiguous stable-ID signature"):
+        assign_stable_ids(
+            pd.DataFrame({"cluster_label": [0, 1]}),
+            {0: ["합성 동일 대표"], 1: ["합성 동일 대표"]},
+            state_path=state_path,
+        )
+    assert state_path.read_bytes() == previous

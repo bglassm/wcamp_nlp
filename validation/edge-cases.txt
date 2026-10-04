@@ -1,0 +1,77 @@
+Synthetic-only edge observations. BEFORE: 5ffc89d; AFTER: repaired working tree.
+
+BEFORE
+{
+  "mixed_one_character_negatives": {
+    "expected_clusters": 1,
+    "actual_clusters": 0,
+    "actual_noise": 2
+  },
+  "repeated_sentence_punctuation": {
+    "expected_clause_count": 2,
+    "actual_clause_count": 6,
+    "actual_clauses": [
+      "색상이 좋아요!",
+      "!",
+      "!",
+      "배송이 늦어요.",
+      ".",
+      "."
+    ]
+  },
+  "float_cluster_ids": {
+    "expected_cluster_ids": [
+      0
+    ],
+    "actual_cluster_ids": []
+  },
+  "missing_facet": {
+    "expected_error": null,
+    "actual_error": "IndexError: single positional indexer is out-of-bounds"
+  },
+  "unescaped_report_text": {
+    "expected_literal_script": false,
+    "actual_literal_script": true
+  },
+  "noise_occupies_top_twenty_slot": {
+    "expected_rows": 20,
+    "actual_rows": 19
+  }
+}
+
+AFTER
+{
+  "mixed_one_character_negatives": {
+    "expected_clusters": 1,
+    "actual_clusters": 1,
+    "actual_noise": 0
+  },
+  "repeated_sentence_punctuation": {
+    "expected_clause_count": 2,
+    "actual_clause_count": 2,
+    "actual_clauses": [
+      "색상이 좋아요!!!",
+      "배송이 늦어요..."
+    ]
+  },
+  "float_cluster_ids": {
+    "expected_cluster_ids": [
+      0
+    ],
+    "actual_cluster_ids": [
+      0
+    ]
+  },
+  "missing_facet": {
+    "expected_error": null,
+    "actual_error": null
+  },
+  "unescaped_report_text": {
+    "expected_literal_script": false,
+    "actual_literal_script": false
+  },
+  "noise_occupies_top_twenty_slot": {
+    "expected_rows": 20,
+    "actual_rows": 20
+  }
+}

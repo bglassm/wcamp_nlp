@@ -58,6 +58,7 @@ from pipeline.refiner import (
     refine_clusters,
     _normalize_rows,
     apply_facet_routing,
+    RefinementNamespaceError,
 )
 from utils.runmeta import write_run_manifest, write_meta_json
 from pipeline.visualizer import generate_run_report
@@ -88,6 +89,62 @@ def _offset_labels(labels: np.ndarray, base: int) -> np.ndarray:
 def _relabel_dict(d: Dict[int, list], base: int) -> Dict[int, list]:
     """Apply exactly the same mapping to representatives, keywords and clause rows."""
     return {offset_cluster_label(k, base): v for k, v in d.items()}
+
+
+def _finalize_polarity_result(
+    sub_df: pd.DataFrame,
+    labels_raw: np.ndarray,
+    embeddings: np.ndarray,
+    *,
+    polarity: str,
+    base: int,
+    reps: Dict[int, list],
+    kw: Dict[int, list],
+    refined_df: pd.DataFrame | None = None,
+    keyword_model: str | None = None,
+    representative_extractor=None,
+    keyword_extractor=None,
+):
+    """Use one final grouping for rows, representatives, keywords, reports and IDs.
+
+    Original parent labels remain in original_cluster_label. Fallback rows receive
+    valid refined IDs too, so mixed refinement outcomes never introduce missing IDs.
+    """
+    original_labels = _offset_labels(labels_raw, base)
+    if len(original_labels) != len(sub_df):
+        raise ValueError("Cluster labels do not align with source clauses")
+    if refined_df is None:
+        frame = sub_df.copy()
+        final_labels = original_labels.copy()
+        reps_final = _relabel_dict(reps, base)
+        kw_final = _relabel_dict(kw, base)
+    else:
+        frame = refined_df.copy()
+        identity_cols = [c for c in ("clause_id", "review_id", "clause") if c in sub_df.columns]
+        if len(frame) != len(sub_df) or not frame[identity_cols].reset_index(drop=True).equals(sub_df[identity_cols].reset_index(drop=True)):
+            raise ValueError("Refined rows do not align with the ordered source clauses")
+        final_values = pd.to_numeric(frame["refined_cluster_id"], errors="raise").to_numpy()
+        if (not np.isfinite(final_values).all() or (final_values % 1 != 0).any()
+                or (final_values < base).any() or (final_values > base + 999).any()):
+            raise RefinementNamespaceError("Refined IDs escape their polarity namespace")
+        final_labels = final_values.astype(int)
+        local_labels = np.where(final_labels == base + 999, -1, final_labels - base)
+        select_reps = representative_extractor or extract_representatives
+        select_keywords = keyword_extractor or extract_keywords
+        local_reps = select_reps(
+            texts=frame["clause"].tolist(), embeddings=embeddings, labels=local_labels,
+            top_k=config.TOP_K_REPRESENTATIVES, use_semantic_helper=False,
+        )
+        local_kw = select_keywords(local_reps, model_name=keyword_model)
+        reps_final = _relabel_dict(local_reps, base)
+        kw_final = _relabel_dict(local_kw, base)
+    frame["original_cluster_label"] = original_labels
+    frame["cluster_label"] = final_labels
+    frame["refined_cluster_id"] = final_labels
+    frame["refined_label"] = np.where(final_labels == base + 999, -1, final_labels - base)
+    frame["refinement_applied"] = refined_df is not None
+    frame["polarity"] = polarity
+    return frame, reps_final, kw_final
 
 
 def _ensure_facet_top1(df: pd.DataFrame, *, default: str | None = None) -> pd.DataFrame:
@@ -689,6 +746,9 @@ def run_full_pipeline(
                     if cov_cnt == 0:
                         raise RuntimeError("Refinement produced zero facet assignments")
 
+                except RefinementNamespaceError:
+                    # Capacity/polarity errors must never be hidden by a fallback grouping.
+                    raise
                 except Exception:
                     logging.exception("[REFINE] failed, falling back to non-refined path")
                     refined_df = None
@@ -696,19 +756,19 @@ def run_full_pipeline(
                 logging.info("[REFINE] skipped (enabled=%s, facets_obj=%s)",
                              refine_enabled, type(facets_obj).__name__ if facets_obj is not None else None)
 
-            # apply label offsets and accumulate
+            # Publish one canonical grouping, retaining original parent labels for audit.
             base = base_map[pol]
-            labels_off = _offset_labels(labels_raw, base)
-            reps_off = _relabel_dict(reps, base)
-            kw_off = _relabel_dict(kw, base)
-
-            if refined_df is not None:
-                clause_frame = refined_df.copy()
-                clause_frame["cluster_label"] = labels_off
-                if "polarity" not in clause_frame.columns:
-                    clause_frame["polarity"] = pol
-            else:
-                clause_frame = sub_df.assign(cluster_label=labels_off, polarity=pol)
+            clause_frame, reps_off, kw_off = _finalize_polarity_result(
+                sub_df, labels_raw,
+                semantic_clause_embs if semantic_clause_embs is not None else embeddings,
+                polarity=pol, base=base, reps=reps, kw=kw,
+                refined_df=refined_df, keyword_model=keyword_model,
+            )
+            if alias_terms:
+                reps_off = {
+                    cid: sorted(items, key=lambda text: any(term in text for term in alias_terms), reverse=True)
+                    for cid, items in reps_off.items()
+                }
 
             clause_frame = apply_facet_routing(
                 clause_frame,
@@ -767,8 +827,8 @@ def run_full_pipeline(
                          int(combined_clause_df["facet_bucket"].notna().sum()), total_rows)
 
         # debug sample CSV
-        keep_cols = [c for c in ["review_id", "polarity", "cluster_label", "refined_cluster_id",
-                                  "facet_top1", "confidence", "clause"] if c in combined_clause_df.columns]
+        keep_cols = [c for c in ["review_id", "polarity", "original_cluster_label", "cluster_label", "refined_cluster_id",
+                                  "refinement_applied", "facet_top1", "confidence", "clause"] if c in combined_clause_df.columns]
         combined_clause_df.head(200)[keep_cols].to_csv(
             out_dir / f"debug_combined_head_{stem_effective}.csv", index=False, encoding="utf-8-sig")
 

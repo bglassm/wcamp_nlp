@@ -1,4 +1,4 @@
-﻿# pipeline/refiner.py
+# pipeline/refiner.py
 # Domain-agnostic refinement layer
 # - Facet routing via facet description embeddings
 # - Heterogeneity check (silhouette) and optional local sub-clustering (KMeans)
@@ -28,7 +28,17 @@ from pathlib import Path
 import io
 import os
 
-from pipeline.text_utils import tokenize_lemmas
+from pipeline.contracts import normalize_polarity
+
+
+def tokenize_lemmas(text):
+    # Import the optional lexical model only when routing actually needs it.
+    from pipeline.text_utils import tokenize_lemmas as tokenize
+    return tokenize(text)
+
+
+class RefinementNamespaceError(ValueError):
+    """A final cluster would collide with noise or another polarity namespace."""
 
 logger = logging.getLogger(__name__)
 
@@ -873,7 +883,7 @@ def refine_clusters(
     min_cluster_size_for_split: int = 40,
     max_local_k: int = 4,
     other_label_value: str | int = "other",
-    stable_id_prefix: int = 0,  # negative=0, neutral=1, positive=2
+    stable_id_prefix: Optional[int] = None,  # infer negative=0, neutral=1, positive=2
 ) -> pd.DataFrame:
     """
     Refine within one polarity.
@@ -884,7 +894,12 @@ def refine_clusters(
     if df_clauses is None or df_clauses.empty:
         return df_clauses
 
-    df = df_clauses.copy()
+    original_index = df_clauses.index.copy()
+    df = df_clauses.reset_index(drop=True).copy()
+    polarity = normalize_polarity(polarity)
+    prefix = {"negative": 0, "neutral": 1, "positive": 2}[polarity]
+    if stable_id_prefix is not None and stable_id_prefix != prefix:
+        raise RefinementNamespaceError("Explicit stable_id_prefix does not match polarity")
 
     if "cluster_label" not in df.columns:
         raise ValueError("cluster_label column is required")
@@ -893,7 +908,13 @@ def refine_clusters(
     df["cluster_label"] = df["cluster_label"].apply(_coerce_to_int_or_other)
 
     # normalize embeddings
-    clause_embs = _normalize_rows(np.asarray(clause_embs, dtype=np.float32))
+    clause_embs = np.asarray(clause_embs, dtype=np.float32)
+    if clause_embs.ndim != 2 or len(clause_embs) != len(df) or not np.isfinite(clause_embs).all():
+        raise ValueError("Clause embeddings must be finite and align with every input row")
+    clause_embs = _normalize_rows(clause_embs)
+    raw_ids = sorted(set(int(value) for value in df["cluster_label"] if not _is_other(value, other_label_value)))
+    if any(value < 0 or value >= 999 for value in raw_ids):
+        raise RefinementNamespaceError("Raw cluster labels must be within 0..998 before refinement")
 
     # facet routing into new columns, preserving existing annotations
     clause_texts = df["clause"].astype(str).tolist() if "clause" in df.columns else None
@@ -953,37 +974,45 @@ def refine_clusters(
     blank_hits = df["facet_rule_hits"].astype(str).str.strip().isin(["", "nan", "none", "None"])
     df.loc[blank_hits, "facet_rule_hits"] = "[]"
 
-    # default refined_label = original cluster_label
-    df["refined_label"] = df["cluster_label"].values
-
-    # split clusters if heterogeneous
-    for cl, sub in df.groupby("cluster_label", sort=False):
+    # Reserve every parent ID. The first child retains its parent ID; extra children
+    # use unused IDs, never arithmetic concatenation such as parent*10+child.
+    df["refined_label"] = -1
+    plans = []
+    required_extra_ids = 0
+    for cl, sub in df.groupby("cluster_label", sort=True):
         if _is_other(cl, other_label_value):
             continue
-        idx = sub.index.to_numpy()
-        if idx.size < min_cluster_size_for_split:
-            continue
-        X = clause_embs[idx]
-        sil, best_k = heterogeneity_score(X, min_k=2, max_k=max_local_k)
-        if best_k and sil >= hetero_sil_threshold:
-            sub_labels = local_subcluster_kmeans(X, k=best_k)
-            base = _safe_int(cl)
-            base = base if (base is not None and base >= 0) else 0
-            df.loc[idx, "refined_label"] = [base * 10 + int(s) for s in sub_labels]
+        positions = sub.index.to_numpy()
+        children = np.zeros(len(positions), dtype=int)
+        if len(positions) >= min_cluster_size_for_split:
+            X = clause_embs[positions]
+            sil, best_k = heterogeneity_score(X, min_k=2, max_k=max_local_k)
+            if best_k and sil >= hetero_sil_threshold:
+                raw_children = np.asarray(local_subcluster_kmeans(X, k=best_k))
+                if (raw_children.ndim != 1 or len(raw_children) != len(positions)
+                        or not np.isfinite(raw_children).all()
+                        or (raw_children < 0).any() or (raw_children % 1 != 0).any()):
+                    raise ValueError("Local subcluster labels must be nonnegative integers aligned to rows")
+                children = raw_children.astype(int)
+        child_ids = sorted(set(children.tolist()))
+        required_extra_ids += len(child_ids) - 1
+        plans.append((int(cl), positions, children, child_ids))
 
-    # stable refined id within polarity namespace
-    prefix_map = {"negative": 0, "neutral": 1, "positive": 2}
-    try:
-        prefix = int(stable_id_prefix)
-    except (TypeError, ValueError):
-        prefix = prefix_map.get(polarity, 0)
+    available = [value for value in range(999) if value not in set(raw_ids)]
+    if required_extra_ids > len(available):
+        raise RefinementNamespaceError(
+            f"Refinement capacity exhausted for polarity {polarity}: "
+            f"{len(raw_ids) + required_extra_ids} groups exceed 999"
+        )
+    free_ids = iter(available)
+    for parent, positions, children, child_ids in plans:
+        child_map = {child_ids[0]: parent}
+        child_map.update({child: next(free_ids) for child in child_ids[1:]})
+        df.loc[positions, "refined_label"] = [child_map[int(child)] for child in children]
 
-    def _mk_id(v: Any) -> int:
-        if _is_other(v, other_label_value):
-            return prefix * 1000 + 999
-        vi = _safe_int(v)
-        return prefix * 1000 + (vi if vi is not None else 999)
-
-    df["refined_cluster_id"] = df["refined_label"].map(_mk_id)
+    df["refined_cluster_id"] = df["refined_label"].map(
+        lambda value: prefix * 1000 + (999 if value < 0 else int(value))
+    )
     df["polarity"] = polarity
+    df.index = original_index
     return df

@@ -74,6 +74,28 @@ def test_single_negative_and_all_noise_are_not_clusters(texts, tmp_path):
     assert result["clusters"] == []
 
 
+def test_one_character_negatives_keep_vectors_with_longer_positive_input(tmp_path):
+    source = payload("늦", "늦", "색상이 좋아요.")
+    first = demo.run_demo(source, tmp_path)
+    assert first["summary"]["negative_count"] == 2
+    assert first["summary"]["cluster_count"] == 1
+    assert first["summary"]["noise_count"] == 0
+    assert first["clusters"][0]["count"] == 2
+    assert "1–4 grams" in first["methods"]["embedding"]
+    assert demo.run_demo(source, tmp_path) == first
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("색상이 좋아요!!! 배송이 늦어요...", ["색상이 좋아요!!!", "배송이 늦어요..."]),
+    ("색상이 좋아요！？배송이 늦어요?!", ["색상이 좋아요！？", "배송이 늦어요?!"]),
+])
+def test_repeated_punctuation_does_not_create_spurious_neutral_clauses(text, expected, tmp_path):
+    result = demo.run_demo(payload(text), tmp_path)
+    assert [clause["clause"] for clause in result["clauses"]] == expected
+    assert result["summary"]["clause_count"] == 2
+    assert result["summary"]["polarity_counts"] == {"positive": 1, "neutral": 0, "negative": 1}
+
+
 def test_warm_cache_gives_identical_result_without_embedding(tmp_path, monkeypatch):
     source = demo.load_synthetic_reviews(demo.DEFAULT_INPUT)
     first = demo.run_demo(source, tmp_path)

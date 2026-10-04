@@ -180,7 +180,9 @@ def _should_split(left: str, right: str, ctype: str, *, offline: bool = False) -
 
 def _sentence_segments(text: str, offline: bool) -> List[str]:
     if offline:
-        return re.split(r"(?<=[.!?。！？])\s*|\n+", text)
+        # Split after a complete punctuation run, retaining !!! or ... on the
+        # sentence instead of emitting extra punctuation-only neutral clauses.
+        return re.split(r"(?<=[.!?。！？])(?![.!?。！？])\s*|\n+", text)
     import kss
     return kss.split_sentences(text)
 

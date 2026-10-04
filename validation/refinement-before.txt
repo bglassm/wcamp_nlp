@@ -1,0 +1,8 @@
+Baseline: 5ffc89d32ca2f93a801d03c2f0e51889fcffde06
+Synthetic arrays; no external models or original reviews.
+
+REPRODUCED: split parent 1 child 0 and unsplit parent 10 share final ID 10
+REPRODUCED: split negative parent 100 enters neutral namespace 1000/1001
+REPRODUCED: omitted positive prefix incorrectly yields negative namespace ID 0
+REPRODUCED: non-default DataFrame index is incorrectly used as embedding row position
+REPRODUCED: raw representative keys give split child 10 another parent's sentence and omit child 11

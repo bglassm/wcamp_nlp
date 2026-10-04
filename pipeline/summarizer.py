@@ -162,15 +162,16 @@ def extract_representatives(
     lambda_mult = float(getattr(config, "REPRESENTATIVE_MMR_LAMBDA", 0.7))
     duplicate_threshold = float(getattr(config, "REPRESENTATIVE_DUPLICATE_SIM_THRESHOLD", 0.95))
 
-    cluster_ids = set()
+    canonical_labels: List[Optional[int]] = []
     for lbl in labels:
-        try:
-            li = int(lbl)
-            if not is_noise_label(li):
-                cluster_ids.add(li)
-        except (ValueError, TypeError):
+        if is_noise_label(lbl):
+            canonical_labels.append(None)
             continue
-    cluster_ids = sorted(cluster_ids)
+        numeric = float(lbl)
+        if numeric != int(numeric):
+            raise ValueError("Cluster labels must be integer IDs")
+        canonical_labels.append(int(numeric))
+    cluster_ids = sorted({label for label in canonical_labels if label is not None})
     logger.info("[REPS] extracting for %d clusters (top_k=%d, lambda=%.2f)", len(cluster_ids), final_top_k, lambda_mult)
 
     semantic_model = _load_semantic_helper() if use_semantic_helper else None
@@ -180,7 +181,7 @@ def extract_representatives(
 
     reps: Dict[int, List[str]] = {}
     for cid in cluster_ids:
-        idxs = [i for i, lbl in enumerate(labels) if str(lbl) == str(cid)]
+        idxs = [i for i, lbl in enumerate(canonical_labels) if lbl == cid]
         if not idxs:
             continue
 
