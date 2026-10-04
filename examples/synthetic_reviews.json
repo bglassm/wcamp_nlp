@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "synthetic": true,
+  "provenance": "Newly authored fictional Korean reviews for this software demonstration. No original reviews, community exports, or personal information were used.",
+  "product": "가상의 보온 머그",
+  "reviews": [
+    {"review_id": "synthetic-001", "review": "색상이 예뻐요 하지만 배송이 너무 늦었어요."},
+    {"review_id": "synthetic-002", "review": "손잡이가 편해요. 배송이 너무 늦어서 아쉬워요."},
+    {"review_id": "synthetic-003", "review": "보온 성능은 좋아요 그러나 배송이 너무 늦었어요."},
+    {"review_id": "synthetic-004", "review": "설명서는 읽기 쉬워요. 배송이 너무 늦게 도착했어요."},
+    {"review_id": "synthetic-005", "review": "머그의 모양이 예뻐요 하지만 포장 상자가 찢어져 왔어요."},
+    {"review_id": "synthetic-006", "review": "색상은 마음에 들어요. 포장 상자가 찢어져 있어서 당황했어요."},
+    {"review_id": "synthetic-007", "review": "용량은 적당해요 다만 포장 상자가 찢어져 왔어요."},
+    {"review_id": "synthetic-008", "review": "손에 잡히는 느낌은 좋아요. 포장 상자가 찢어진 채로 왔어요."},
+    {"review_id": "synthetic-009", "review": "머그가 가벼워서 좋아요 하지만 뚜껑 틈으로 물이 새요."},
+    {"review_id": "synthetic-010", "review": "손잡이 크기는 적당해요. 뚜껑 틈으로 물이 자꾸 새요."},
+    {"review_id": "synthetic-011", "review": "보온 성능은 만족해요 그러나 뚜껑 틈으로 물이 새요."},
+    {"review_id": "synthetic-012", "review": "겉면의 색상이 예뻐요. 뚜껑 틈으로 물이 조금씩 새요."},
+    {"review_id": "synthetic-013", "review": "손잡이가 삐걱거리는 소음이 거슬려요."},
+    {"review_id": "synthetic-014", "review": "보온 성능이 좋아요. 손잡이가 편해요."},
+    {"review_id": "synthetic-015", "review": "색상은 파란색이에요. 용량은 삼백 밀리리터로 표시되어 있어요."},
+    {"review_id": "synthetic-016", "review": "세척이 편해요 그리고 뚜껑을 닫기 쉬워요."}
+  ]
+}

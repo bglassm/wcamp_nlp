@@ -246,7 +246,7 @@ def _load_external_stopwords(stopword_path: str) -> set:
         resolved = BASE_DIR / resolved
 
     if not resolved.exists():
-        logger.warning("Stopword file not found: %s — using core list only", resolved)
+        logger.warning("Optional stopword file not found: %s — using core list only", resolved.name)
         return set()
 
     try:

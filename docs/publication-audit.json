@@ -1,0 +1,331 @@
+{
+  "generated_at_utc": "2026-10-04T07:47:54.397759+00:00",
+  "scope": "All commits and unique file blobs reachable from fetched origin remote branches and explicit refs/audit/ pull-request refs; refs frozen below. Working tree not scanned.",
+  "origin_refs": [
+    {
+      "ref": "refs/audit/pull1/head",
+      "commit": "c91632b878a41bccf272a5ba462177958c412f53"
+    },
+    {
+      "ref": "refs/audit/pull1/merge",
+      "commit": "e0c48bb1f9f87a6d733ca05d1ffbd2e5bf4a3f22"
+    },
+    {
+      "ref": "refs/remotes/origin/HEAD",
+      "commit": "08a3752898025f4d4a0747af5259ec1dc016c556"
+    },
+    {
+      "ref": "refs/remotes/origin/codex/fix-bugs-and-improve-main.py",
+      "commit": "c91632b878a41bccf272a5ba462177958c412f53"
+    },
+    {
+      "ref": "refs/remotes/origin/main",
+      "commit": "08a3752898025f4d4a0747af5259ec1dc016c556"
+    },
+    {
+      "ref": "refs/remotes/origin/openai",
+      "commit": "b57bebd016ce0d6f0476b0df35649fd1b8001ab8"
+    }
+  ],
+  "is_shallow": false,
+  "reachable_commits": 53,
+  "unique_paths": 58,
+  "unique_file_blobs": 200,
+  "text_blobs_scanned": 199,
+  "text_bytes_scanned": 2522280,
+  "binary_blobs": 1,
+  "license_notice_paths": [],
+  "readme_paths": [],
+  "potential_data_or_secret_paths": [
+    "old data/community.zip"
+  ],
+  "archives": [
+    {
+      "blob": "b5c1d3d0e777d2c68006f9ddafbef29a9fb20a6d",
+      "paths": [
+        "old data/community.zip"
+      ],
+      "bytes": 6401161,
+      "sha256": "89835e94c83888139c1ea59522de9734a2a2f427f28e641bcb53e7971c1a98e3",
+      "members": [
+        {
+          "path": "apple.xlsx",
+          "bytes": 1057731,
+          "compressed_bytes": 1050839,
+          "workbook": {
+            "bytes": 1057731,
+            "sha256": "ea275400e140fb014ebc75851addf206d937bc4fa8f1f8443dec7212c3c9d0e0",
+            "sheets": [
+              {
+                "sheet_index": 1,
+                "xml_path": "xl/worksheets/sheet1.xml",
+                "nonempty_rows_including_first": 648,
+                "populated_cells": 3871,
+                "long_text_cells_over_80_chars": 1062,
+                "recognized_first_row_schema_labels": [
+                  "platform",
+                  "link",
+                  "date",
+                  "title",
+                  "body",
+                  "summary"
+                ],
+                "unrecognized_first_row_cells_suppressed": 0,
+                "pattern_hit_counts_not_verified_identities": {
+                  "url_like": 760,
+                  "email_like": 13,
+                  "korean_mobile_like": 6
+                },
+                "dimension": "A1:F648"
+              }
+            ],
+            "embedded_binary_member_count": 0,
+            "core_properties_present": true
+          }
+        },
+        {
+          "path": "flatfishsashimi.xlsx",
+          "bytes": 3009794,
+          "compressed_bytes": 2996183,
+          "workbook": {
+            "bytes": 3009794,
+            "sha256": "3e4c090fe674a635aec75a4737013e066691c3520b7fa6ea412edca585d6007f",
+            "sheets": [
+              {
+                "sheet_index": 1,
+                "xml_path": "xl/worksheets/sheet1.xml",
+                "nonempty_rows_including_first": 1511,
+                "populated_cells": 9052,
+                "long_text_cells_over_80_chars": 2404,
+                "recognized_first_row_schema_labels": [
+                  "platform",
+                  "link",
+                  "date",
+                  "title",
+                  "body",
+                  "summary"
+                ],
+                "unrecognized_first_row_cells_suppressed": 0,
+                "pattern_hit_counts_not_verified_identities": {
+                  "url_like": 1636,
+                  "korean_mobile_like": 15,
+                  "email_like": 28
+                },
+                "dimension": "A1:F1511"
+              }
+            ],
+            "embedded_binary_member_count": 0,
+            "core_properties_present": true
+          }
+        },
+        {
+          "path": "importedpork.xlsx",
+          "bytes": 1657079,
+          "compressed_bytes": 1534856,
+          "workbook": {
+            "bytes": 1657079,
+            "sha256": "d4d01680faf561ae50350d09a324abc02144c2fb70d389fa0781359c5f487bfe",
+            "sheets": [
+              {
+                "sheet_index": 1,
+                "xml_path": "xl/worksheets/sheet1.xml",
+                "nonempty_rows_including_first": 33460,
+                "populated_cells": 167274,
+                "long_text_cells_over_80_chars": 25058,
+                "recognized_first_row_schema_labels": [
+                  "platform",
+                  "link",
+                  "date",
+                  "title",
+                  "body"
+                ],
+                "unrecognized_first_row_cells_suppressed": 0,
+                "pattern_hit_counts_not_verified_identities": {
+                  "url_like": 33462
+                },
+                "dimension": "A1:E33460"
+              }
+            ],
+            "embedded_binary_member_count": 0,
+            "core_properties_present": true
+          }
+        },
+        {
+          "path": "paprika.xlsx",
+          "bytes": 824024,
+          "compressed_bytes": 818695,
+          "workbook": {
+            "bytes": 824024,
+            "sha256": "7f2c3f08d0f96f4e5dbefde79fa06b32657a13f6402a1a4b4b3b6e30c682913c",
+            "sheets": [
+              {
+                "sheet_index": 1,
+                "xml_path": "xl/worksheets/sheet1.xml",
+                "nonempty_rows_including_first": 546,
+                "populated_cells": 3276,
+                "long_text_cells_over_80_chars": 901,
+                "recognized_first_row_schema_labels": [
+                  "platform",
+                  "link",
+                  "date",
+                  "title",
+                  "body",
+                  "summary"
+                ],
+                "unrecognized_first_row_cells_suppressed": 0,
+                "pattern_hit_counts_not_verified_identities": {
+                  "url_like": 655,
+                  "email_like": 17,
+                  "korean_mobile_like": 10
+                },
+                "dimension": "A1:F546"
+              }
+            ],
+            "embedded_binary_member_count": 0,
+            "core_properties_present": true
+          }
+        }
+      ]
+    }
+  ],
+  "text_pattern_findings": [
+    {
+      "blob": "1242cae99d6576fe464fbb8ba8818205584d51c5",
+      "paths": [
+        "config.py"
+      ],
+      "pattern_hit_counts_not_verified_secrets": {
+        "url_like": 1
+      }
+    },
+    {
+      "blob": "148d98444243e6a6dcfa8bd785a164ba8753a5cc",
+      "paths": [
+        "config.py"
+      ],
+      "pattern_hit_counts_not_verified_secrets": {
+        "url_like": 1
+      }
+    },
+    {
+      "blob": "2186dbd1d89acc901b9a80e4fa777750fe00c579",
+      "paths": [
+        "config.py"
+      ],
+      "pattern_hit_counts_not_verified_secrets": {
+        "url_like": 1
+      }
+    },
+    {
+      "blob": "249cac8bd21adf8ecf42ec700acbb9bbc99d662a",
+      "paths": [
+        "config.py"
+      ],
+      "pattern_hit_counts_not_verified_secrets": {
+        "url_like": 1
+      }
+    },
+    {
+      "blob": "2bf0dfaebf1d72c69bfbc1393c717b2dac47adeb",
+      "paths": [
+        "config.py"
+      ],
+      "pattern_hit_counts_not_verified_secrets": {
+        "url_like": 1
+      }
+    },
+    {
+      "blob": "454ffe3b31d1d37412a44f3e89c0f04783e3d907",
+      "paths": [
+        "config.py"
+      ],
+      "pattern_hit_counts_not_verified_secrets": {
+        "url_like": 1
+      }
+    },
+    {
+      "blob": "6b6c11bc057d4558ac23e2f76ff17fa935b1ff37",
+      "paths": [
+        "config.py"
+      ],
+      "pattern_hit_counts_not_verified_secrets": {
+        "url_like": 1
+      }
+    },
+    {
+      "blob": "72a399706516e3cdec40ff2ec5219a85045d327b",
+      "paths": [
+        "config.py"
+      ],
+      "pattern_hit_counts_not_verified_secrets": {
+        "url_like": 1
+      }
+    },
+    {
+      "blob": "8ca0eedbb73b429cfb0d0905776b25c6be4ad202",
+      "paths": [
+        "config.py"
+      ],
+      "pattern_hit_counts_not_verified_secrets": {
+        "url_like": 1
+      }
+    },
+    {
+      "blob": "cea67f387f74fb6a142de584f9e7145ebdafd4ff",
+      "paths": [
+        "codex.patch"
+      ],
+      "pattern_hit_counts_not_verified_secrets": {
+        "url_like": 1
+      }
+    },
+    {
+      "blob": "d07ddfc837010f3f477378d1e756e878b538a593",
+      "paths": [
+        "config.py"
+      ],
+      "pattern_hit_counts_not_verified_secrets": {
+        "url_like": 1
+      }
+    },
+    {
+      "blob": "e54bae6a31e99864ba00f0531e447b9158b01408",
+      "paths": [
+        "config.py"
+      ],
+      "pattern_hit_counts_not_verified_secrets": {
+        "url_like": 1
+      }
+    },
+    {
+      "blob": "f3e0b248a609f68eb45b55095c9ffc0abcc6bc4e",
+      "paths": [
+        "config.py"
+      ],
+      "pattern_hit_counts_not_verified_secrets": {
+        "url_like": 1
+      }
+    },
+    {
+      "blob": "f71b37db4543ed8edaabc0039ecdc59076c37bbe",
+      "paths": [
+        "config.py"
+      ],
+      "pattern_hit_counts_not_verified_secrets": {
+        "url_like": 1
+      }
+    }
+  ],
+  "lfs_pointers": [],
+  "commit_identity_email_count": 4,
+  "non_noreply_commit_identity_email_count": 1,
+  "commit_message_pattern_findings": [],
+  "limitations": [
+    "Pattern matches are triage signals, not verified personal identities or active credentials.",
+    "No proof of consent, redistribution rights, or effective anonymization is established by this scan.",
+    "Reachability includes explicitly fetched refs/audit/ pull refs, but excludes other unfetched refs, deleted remote refs, reflogs, hosting caches, releases, issues, attachments, and external datasets.",
+    "Long Korean strings in source rules/comments/tests may have unverified provenance; do not reuse them as new examples.",
+    "No raw record, personal field value, commit identity, or credential match is emitted or persisted by this script.",
+    "Workbook content was read in memory solely to count rows, recognized schema fields, and pattern matches; no workbook was written or extracted."
+  ]
+}

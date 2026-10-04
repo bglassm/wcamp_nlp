@@ -14,10 +14,28 @@ except ImportError:
 from typing import Any, List, Tuple
 import pandas as pd
 import config
-from pyabsa import TaskCodeOption
-from pyabsa.framework.checkpoint_class.checkpoint_template import APCCheckpointManager
+from pipeline.contracts import normalize_polarity
 import os, builtins
 from contextlib import contextmanager, redirect_stdout, redirect_stderr
+
+
+def validate_clause_alignment(absa_df: pd.DataFrame, clause_df: pd.DataFrame, id_col: str = "review_id") -> None:
+    """Require exactly the current ordered source clauses, including literal string IDs."""
+    required = {"review_id", "clause", "polarity", "confidence"}
+    if not required.issubset(absa_df.columns):
+        raise ValueError("ABSA cache is missing required columns")
+    expected = list(clause_df[[id_col, "clause"]].astype(str).itertuples(index=False, name=None))
+    actual = list(absa_df[["review_id", "clause"]].astype(str).itertuples(index=False, name=None))
+    if actual != expected:
+        raise ValueError("ABSA results do not match the ordered source review IDs and clauses")
+
+
+def load_absa_cache(path, clause_df: pd.DataFrame, id_col: str = "review_id") -> pd.DataFrame:
+    """Preserve 001/NA-like IDs; reject stale, reordered, partial or modified caches."""
+    frame = pd.read_csv(path, dtype={"review_id": str, "clause": str}, keep_default_na=False)
+    validate_clause_alignment(frame, clause_df, id_col)
+    return frame
+
 
 def classify_clauses(
     clause_df: pd.DataFrame,
@@ -31,13 +49,18 @@ def classify_clauses(
     - confidence: 모델이 해당 판단을 얼마나 확신하는지 (float 0~1)
     """
 
+    if clause_df.empty:
+        return []
+    from pyabsa import TaskCodeOption
+    from pyabsa.framework.checkpoint_class.checkpoint_template import APCCheckpointManager
+
     # 1) 모델 로드
     try:
         model: Any = APCCheckpointManager.get_sentiment_classifier(
             checkpoint=model_name,
             auto_device=device,
             task_code=TaskCodeOption.Aspect_Polarity_Classification,
-            force_download=True
+            force_download=False
         )
     except Exception as e:
         raise ImportError(f"PyABSA 모델 로드 오류: {e}")
@@ -56,13 +79,26 @@ def classify_clauses(
             ignore_detail=True,
         )
 
-    # 4) 튜플 리스트로 변환
-    output: List[Tuple[int, str, str, float]] = []
-    for rid, clause, res in zip(review_ids, clauses, results):
-        pol  = res["sentiment"][0].lower()        # ex. "negative"
-        conf = float(res["confidence"][0])         # ex. 0.87
-        output.append((rid, clause, pol, conf))
+    return parse_clause_results(review_ids, clauses, results)
 
+
+def parse_clause_results(review_ids, clauses, results):
+    """Validate result cardinality and scalar/list labels without silently truncating."""
+    import math
+    if len(review_ids) != len(clauses) or len(results) != len(clauses):
+        raise ValueError("ABSA result count does not match clause count")
+    output = []
+    for rid, clause, res in zip(review_ids, clauses, results):
+        pol = normalize_polarity(res["sentiment"])
+        confidence = res["confidence"]
+        if isinstance(confidence, (list, tuple)):
+            if len(confidence) != 1:
+                raise ValueError("Expected exactly one confidence per clause")
+            confidence = confidence[0]
+        confidence = float(confidence)
+        if not math.isfinite(confidence) or not 0 <= confidence <= 1:
+            raise ValueError("Confidence must be finite and within [0, 1]")
+        output.append((rid, clause, pol, confidence))
     return output
 
 @contextmanager

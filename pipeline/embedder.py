@@ -1,3 +1,4 @@
+from __future__ import annotations
 import logging
 import os
 import time
@@ -5,14 +6,11 @@ from typing import List, Optional
 from abc import ABC, abstractmethod
 from pathlib import Path
 import hashlib
+import json
+import tempfile
 
 import numpy as np
 import pandas as pd
-import torch
-from sentence_transformers import SentenceTransformer
-from dotenv import load_dotenv
-import openai
-from openai import OpenAI, APIError, RateLimitError, APIConnectionError
 
 import config
 
@@ -26,6 +24,8 @@ _MODEL_CACHE: dict[str, SentenceTransformer] = {}
 def _get_model(model_name: str, device: Optional[str]) -> SentenceTransformer:
     """Load and cache an SBERT model by (model_name, device) key.
     Kept at module scope so pipeline.mergy and other callers can share the cache."""
+    from sentence_transformers import SentenceTransformer
+
     cache_key = f"{model_name}@{device or 'auto'}"
     if cache_key not in _MODEL_CACHE:
         logger.info("[EMBED] loading SBERT model %s on %s", model_name, device or "auto")
@@ -46,6 +46,8 @@ class LocalEmbedder(Embedder):
     """Embed texts with a local SBERT model."""
 
     def __init__(self, cfg):
+        import torch
+
         self.model_name = cfg.embed.model
         self.batch_size = cfg.embed.batch_size
         self.device = cfg.embed.device
@@ -79,6 +81,9 @@ class OpenAIEmbedder(Embedder):
     """Embed texts via the OpenAI Embeddings API with batching and retry logic."""
 
     def __init__(self, cfg):
+        from dotenv import load_dotenv
+        from openai import OpenAI
+
         self.model_name = cfg.embed.model
         self.batch_size = cfg.embed.batch_size
         self.max_retries = cfg.embed.max_retries
@@ -96,6 +101,8 @@ class OpenAIEmbedder(Embedder):
     def embed(self, texts: List[str]) -> np.ndarray:
         if not texts:
             return np.array([])
+
+        from openai import APIError, APIConnectionError, RateLimitError
 
         all_embeddings = []
         n_batches = (len(texts) + self.batch_size - 1) // self.batch_size
@@ -146,64 +153,74 @@ class CachingEmbedder(Embedder):
         self.cache_dir = Path(cfg.embed.cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-        # cache key encodes backend + model + batch_size + device/api_base
-        key_parts = [
-            cfg.embed.backend,
-            cfg.embed.model,
-            str(cfg.embed.batch_size),
-            cfg.embed.device if cfg.embed.backend == "local" else cfg.embed.api_base,
-        ]
-        self.cache_key = hashlib.sha256("-".join(key_parts).encode()).hexdigest()[:16]
+        # V2 never trusts an old ID-only cache, including same-width stale vectors.
+        key_parts = {
+            "schema": 2, "backend": cfg.embed.backend, "model": cfg.embed.model,
+            "batch_size": cfg.embed.batch_size,
+            "endpoint": cfg.embed.device if cfg.embed.backend == "local" else cfg.embed.api_base,
+        }
+        self.cache_key = hashlib.sha256(json.dumps(key_parts, sort_keys=True).encode()).hexdigest()[:16]
         logger.info("[EMBED] cache key: %s", self.cache_key)
 
     def _get_cache_path(self, product_id: str) -> Path:
-        return self.cache_dir / f"{product_id}_{self.cache_key}.parquet"
+        safe_product = hashlib.sha256(str(product_id).encode()).hexdigest()[:16]
+        return self.cache_dir / f"{safe_product}_{self.cache_key}.parquet"
 
     def embed(self, texts: List[str], clause_ids: List[str], product_id: str) -> np.ndarray:
-        """Return embeddings for texts, using cached vectors where available."""
+        """Cache by (clause ID, text digest), returning exactly one vector per input row."""
+        if len(texts) != len(clause_ids):
+            raise ValueError("texts and clause_ids must have equal lengths")
         if not texts:
-            return np.array([])
-
+            return np.empty((0, 0), dtype=np.float32)
+        if any(not isinstance(text, str) for text in texts):
+            raise ValueError("All texts must be strings")
+        input_df = pd.DataFrame({
+            "clause_id": [str(cid) for cid in clause_ids],
+            "text_hash": [hashlib.sha256(text.encode()).hexdigest() for text in texts],
+        })
+        if (input_df.groupby("clause_id")["text_hash"].nunique() > 1).any():
+            raise ValueError("One clause ID refers to different texts within the same batch")
+        keys = ["clause_id", "text_hash"]
         cache_path = self._get_cache_path(product_id)
-
-        cached_df = pd.DataFrame()
+        cached_df = pd.DataFrame(columns=keys + ["embedding_vector"])
         if cache_path.exists():
             try:
-                cached_df = pd.read_parquet(cache_path)
-                logger.info("[EMBED] cache hit: %s (%d rows)", cache_path.name, len(cached_df))
-            except Exception as e:
-                logger.warning("[EMBED] cache load failed (%s), rebuilding: %s", cache_path.name, e)
-                cached_df = pd.DataFrame()
-
-        input_df = pd.DataFrame({"clause_id": clause_ids, "text": texts})
-
-        if not cached_df.empty:
-            cached_ids = set(cached_df["clause_id"])
-            to_embed_df = input_df[~input_df["clause_id"].isin(cached_ids)].copy()
-            embedded_df = input_df[input_df["clause_id"].isin(cached_ids)].merge(
-                cached_df, on="clause_id", how="left"
-            )
-            logger.info("[EMBED] cache: %d hit, %d miss", len(embedded_df), len(to_embed_df))
-        else:
-            to_embed_df = input_df.copy()
-            embedded_df = pd.DataFrame()
-            logger.info("[EMBED] cache empty, embedding %d items", len(to_embed_df))
-
-        if not to_embed_df.empty:
-            new_embeddings = self.embedder.embed(to_embed_df["text"].tolist())
-            to_embed_df = to_embed_df.copy()
-            to_embed_df["embedding_vector"] = new_embeddings.tolist()
-            updated_cache = pd.concat([cached_df, to_embed_df[["clause_id", "embedding_vector"]]])
-            updated_cache.to_parquet(cache_path, index=False)
-            logger.info("[EMBED] cache saved: %s (%d rows)", cache_path.name, len(updated_cache))
-            embedded_df = pd.concat([embedded_df, to_embed_df])
-
-        final_df = input_df.merge(
-            embedded_df[["clause_id", "embedding_vector"]], on="clause_id", how="left"
-        )
-        final_embeddings = np.array(final_df["embedding_vector"].tolist(), dtype=np.float32)
-        logger.info("[EMBED] final shape: %s", final_embeddings.shape)
-        return final_embeddings
+                candidate = pd.read_parquet(cache_path)
+                if not set(cached_df.columns).issubset(candidate.columns):
+                    raise ValueError("Unsupported cache schema")
+                if candidate.duplicated(keys).any():
+                    raise ValueError("Duplicate composite cache keys")
+                cached_df = candidate[keys + ["embedding_vector"]]
+            except Exception as exc:
+                logger.warning("[EMBED] invalid cache, rebuilding: %s", exc)
+        cache = {tuple(row[:2]): row[2] for row in cached_df.itertuples(index=False, name=None)}
+        input_keys = list(input_df.itertuples(index=False, name=None))
+        missing = {}
+        for key, text in zip(input_keys, texts):
+            if key not in cache:
+                missing.setdefault(key, text)
+        logger.info("[EMBED] cache: %d hit rows, %d unique misses", sum(k in cache for k in input_keys), len(missing))
+        if missing:
+            vectors = np.asarray(self.embedder.embed(list(missing.values())), dtype=np.float32)
+            if vectors.ndim != 2 or len(vectors) != len(missing) or not np.isfinite(vectors).all():
+                raise ValueError("Embedder must return one finite vector per unique clause")
+            cache.update(zip(missing, vectors.tolist()))
+        result = np.asarray([cache[key] for key in input_keys], dtype=np.float32)
+        if result.ndim != 2 or not np.isfinite(result).all():
+            raise ValueError("Cached vectors have inconsistent dimensions or non-finite values")
+        if missing:
+            updated = pd.DataFrame([(cid, digest, vec) for (cid, digest), vec in cache.items()],
+                                   columns=keys + ["embedding_vector"])
+            # Atomic replace prevents interrupted writes from leaving a partial parquet file.
+            with tempfile.NamedTemporaryFile(dir=self.cache_dir, suffix=".parquet", delete=False) as tmp:
+                tmp_path = Path(tmp.name)
+            try:
+                updated.to_parquet(tmp_path, index=False)
+                tmp_path.replace(cache_path)
+            finally:
+                tmp_path.unlink(missing_ok=True)
+        logger.info("[EMBED] final shape: %s", result.shape)
+        return result
 
 
 def get_embedder(cfg) -> CachingEmbedder:

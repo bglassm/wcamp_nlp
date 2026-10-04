@@ -13,7 +13,6 @@ import pandas as pd
 import logging
 
 import config
-import kss
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +141,7 @@ def _cosine_distance(a: str, b: str) -> float:
     return float(1.0 - np.dot(vec[0], vec[1]))
 
 
-def _should_split(left: str, right: str, ctype: str) -> bool:
+def _should_split(left: str, right: str, ctype: str, *, offline: bool = False) -> bool:
     # Basic guards
     if len(left.strip()) < getattr(config, "SMART_SPLIT_MIN_CHUNK_LEN", 4):
         return False
@@ -158,7 +157,7 @@ def _should_split(left: str, right: str, ctype: str) -> bool:
     j = _jaccard(toks_l, toks_r)
 
     # Distance via embeddings (optional)
-    d = _cosine_distance(left, right)
+    d = 0.0 if offline else _cosine_distance(left, right)
 
     # Thresholds
     jac_add = getattr(config, "SMART_SPLIT_JACCARD_THRESHOLD_ADD", 0.35)
@@ -179,12 +178,19 @@ def _should_split(left: str, right: str, ctype: str) -> bool:
         return (j <= jac_add) or (d >= sim_thr)
 
 
-def _greedy_segment(text: str, max_splits: int = 3) -> List[str]:
+def _sentence_segments(text: str, offline: bool) -> List[str]:
+    if offline:
+        return re.split(r"(?<=[.!?。！？])\s*|\n+", text)
+    import kss
+    return kss.split_sentences(text)
+
+
+def _greedy_segment(text: str, max_splits: int = 3, *, offline: bool = False) -> List[str]:
     """Greedy left-to-right segmentation controlled by _should_split().
     Also handles the enumeration pattern "…도 …고 …도 …" conservatively.
     """
     # First, sentence-level split by kss (punctuation, etc.)
-    sentences = [s.strip() for s in kss.split_sentences(text) if s and s.strip()]
+    sentences = [s.strip() for s in _sentence_segments(text, offline) if s and s.strip()]
     out: List[str] = []
 
     for sent in sentences:
@@ -228,7 +234,7 @@ def _greedy_segment(text: str, max_splits: int = 3) -> List[str]:
             L = sent[left:idx].strip()
             R = sent[idx:].strip()
 
-            if _should_split(L, R, ctype):
+            if _should_split(L, R, ctype, offline=offline):
                 out.append(L)
                 left = idx
                 used += 1
@@ -249,6 +255,8 @@ def split_clauses(
     text_col: str = "review",
     connectives: Optional[List[str]] = None,  # kept for back-compat (ignored by smart splitter)
     id_col: str = "review_id",
+    *,
+    offline: bool = False,
 ) -> pd.DataFrame:
     """Return DataFrame(review_id, clause).
 
@@ -266,25 +274,26 @@ def split_clauses(
             if not text:
                 continue
             start = len(rows)
-            for s in kss.split_sentences(text):
+            for s in _sentence_segments(text, offline):
                 s = s.strip()
                 if s:
                     rows.append({id_col: rid, "clause": s, "clause_source": "segment"})
             if len(rows) == start:
                 rows.append({id_col: rid, "clause": text, "clause_source": "fallback_review"})
-        return pd.DataFrame(rows)
+        return pd.DataFrame(rows, columns=[id_col, "clause", "clause_source"])
 
     # Smart path
-    _ensure_semantic_model()
+    if not offline:
+        _ensure_semantic_model()
     for rid, text in zip(df[id_col].tolist(), df[text_col].astype(str).tolist()):
         text = (text or "").strip()
         if not text:
             continue
         start = len(rows)
-        for clause in _greedy_segment(text, max_splits=getattr(config, "SMART_SPLIT_MAX_SPLITS_PER_SENT", 3)):
+        for clause in _greedy_segment(text, max_splits=getattr(config, "SMART_SPLIT_MAX_SPLITS_PER_SENT", 3), offline=offline):
             if clause:
                 rows.append({id_col: rid, "clause": clause, "clause_source": "segment"})
         if len(rows) == start:
             rows.append({id_col: rid, "clause": text, "clause_source": "fallback_review"})
 
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=[id_col, "clause", "clause_source"])

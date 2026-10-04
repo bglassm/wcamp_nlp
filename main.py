@@ -6,6 +6,7 @@ import logging
 import sys
 import os
 import hashlib
+import json
 import re
 from pathlib import Path
 from typing import List, Dict
@@ -36,7 +37,8 @@ import config
 from pipeline.loader import load_reviews
 from pipeline.preprocess import preprocess_reviews, clean_review_text
 from pipeline.clause_splitter import split_clauses
-from pipeline.absa import classify_clauses
+from pipeline.absa import classify_clauses, load_absa_cache, validate_clause_alignment
+from pipeline.contracts import assign_clause_ids, normalize_polarity, offset_cluster_label
 from pipeline.embedder import get_embedder, CachingEmbedder, _get_model
 from pipeline.reducer import reduce_embeddings
 from pipeline.clusterer import cluster_embeddings, evaluate_clusters
@@ -80,23 +82,12 @@ logger = logging.getLogger(__name__)
 def _offset_labels(labels: np.ndarray, base: int) -> np.ndarray:
     """Shift HDBSCAN labels by polarity base (neg=0, neu=1000, pos=2000).
     Noise label -1 is mapped to base+999."""
-    out = []
-    for l in labels:
-        if isinstance(l, str):
-            l = -1 if l.lower() == "other" else int(l)
-        out.append(base + 999 if int(l) == -1 else int(l) + base)
-    return np.array(out, dtype=int)
+    return np.array([offset_cluster_label(label, base) for label in labels], dtype=int)
 
 
 def _relabel_dict(d: Dict[int, list], base: int) -> Dict[int, list]:
-    """Shift cluster ID keys in a reps/keywords dict by base."""
-    new_d: Dict[int, list] = {}
-    for k, v in d.items():
-        try:
-            new_d[int(k) + base] = v
-        except Exception:
-            new_d[base + 999] = v
-    return new_d
+    """Apply exactly the same mapping to representatives, keywords and clause rows."""
+    return {offset_cluster_label(k, base): v for k, v in d.items()}
 
 
 def _ensure_facet_top1(df: pd.DataFrame, *, default: str | None = None) -> pd.DataFrame:
@@ -228,13 +219,9 @@ def run_embed_pipeline(
         df_reviews = load_reviews(input_file)
         df_reviews = preprocess_reviews(df_reviews)
         df_clauses = split_clauses(df_reviews)
-        df_clauses = classify_clauses(df_clauses)
 
         rid_col = getattr(config, "REVIEW_ID_COL", "review_id")
-        df_clauses["clause_idx"] = df_clauses.groupby(rid_col).cumcount()
-        df_clauses["clause_id"] = df_clauses.apply(
-            lambda row: f"{product_id}_{row[rid_col]}_{row['clause_idx']}", axis=1
-        )
+        df_clauses = assign_clause_ids(df_clauses, product_id, rid_col)
         embedder.embed(
             texts=df_clauses["clause"].tolist(),
             clause_ids=df_clauses["clause_id"].tolist(),
@@ -467,12 +454,21 @@ def run_full_pipeline(
         t0 = time.time()
         logging.info("[1.6] ABSA (batch_size=%d)", config.ABSA_BATCH_SIZE)
         cache_root = Path(getattr(config, "OUTPUT_DIR", "output")) / "cache"
-        absa_cache = cache_root / f"{stem_effective}_absa.csv.gz"
+        # A reused filename must not reuse predictions for changed clauses or model settings.
+        absa_signature = hashlib.sha256(json.dumps({
+            "schema": 2, "model": config.ABSA_MODEL_NAME,
+            "clauses": clause_df[[rid_col, "clause"]].astype(str).values.tolist(),
+        }, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:20]
+        absa_cache = cache_root / f"{stem_effective}_{absa_signature}_absa.csv.gz"
         absa_cache.parent.mkdir(parents=True, exist_ok=True)
+        absa_df = None
         if resume and absa_cache.exists():
-            logging.info("[1.6] using ABSA cache: %s", absa_cache)
-            absa_df = pd.read_csv(absa_cache)
-        else:
+            try:
+                absa_df = load_absa_cache(absa_cache, clause_df, rid_col)
+                logging.info("[1.6] using ABSA cache: %s", absa_cache)
+            except (ValueError, OSError, EOFError):
+                logging.warning("[1.6] invalid ABSA cache; recomputing current clauses")
+        if absa_df is None:
             raw_absa = classify_clauses(
                 clause_df,
                 model_name=config.ABSA_MODEL_NAME,
@@ -480,6 +476,7 @@ def run_full_pipeline(
                 device=config.DEVICE,
             )
             absa_df = pd.DataFrame(raw_absa, columns=["review_id", "clause", "polarity", "confidence"])
+            validate_clause_alignment(absa_df, clause_df, rid_col)
             try:
                 absa_df.to_csv(absa_cache, index=False)
             except Exception:
@@ -487,7 +484,7 @@ def run_full_pipeline(
 
         logging.info("[1.6] polarity counts: %s", absa_df["polarity"].value_counts().to_dict())
         if not absa_df.empty:
-            pol_series = absa_df["polarity"].astype(str).str.lower().str.strip()
+            pol_series = absa_df["polarity"].map(normalize_polarity)
             conf_series = pd.to_numeric(absa_df["confidence"], errors="coerce")
             valid_pols = {"negative", "neutral", "positive"}
             missing_pol = pol_series.isna() | pol_series.eq("") | ~pol_series.isin(valid_pols)
@@ -501,6 +498,11 @@ def run_full_pipeline(
             absa_df["sentiment_fallback"] = []
 
         absa_rid_col = rid_col if rid_col in absa_df.columns else "review_id"
+        if absa_rid_col != rid_col:
+            absa_df = absa_df.rename(columns={absa_rid_col: rid_col})
+            absa_rid_col = rid_col
+        # Identity is assigned across every clause, before polarity selection resets row indices.
+        absa_df = assign_clause_ids(absa_df, stem_effective, rid_col)
         absa_ids = set(absa_df[absa_rid_col].astype(str)) if not absa_df.empty else set()
         post_preprocess_ids = set(df[rid_col].astype(str))
         missing_after_absa = post_preprocess_ids - absa_ids
@@ -550,10 +552,7 @@ def run_full_pipeline(
             # step 3: embedding
             emb_t0 = time.time()
             rid_col = getattr(config, "REVIEW_ID_COL", "review_id")
-            sub_df["clause_idx"] = sub_df.groupby(rid_col).cumcount()
-            sub_df["clause_id"] = sub_df.apply(
-                lambda row: f"{stem_effective}_{row[rid_col]}_{row['clause_idx']}", axis=1
-            )
+            # Preserve the IDs assigned before entering the polarity loop.
             embeddings = main_embedder.embed(
                 texts=sub_df["clause"].tolist(),
                 clause_ids=sub_df["clause_id"].tolist(),
@@ -636,12 +635,12 @@ def run_full_pipeline(
                         show_progress_bar=False,
                     )
                 except Exception:
-                    logging.exception("[FACETS] clause semantic embedding failed, using main embeddings")
+                    logging.exception("[FACETS] semantic embedding failed; semantic routing skipped for this batch")
                     semantic_clause_embs = None
 
             # step 10: refinement
             refined_df = None
-            if refine_enabled and (facets_obj is not None):
+            if refine_enabled and (facets_obj is not None) and semantic_clause_embs is not None:
                 try:
                     work_df = sub_df.copy()
                     lbl_ser = pd.to_numeric(pd.Series(labels_raw), errors="coerce")
@@ -651,7 +650,7 @@ def run_full_pipeline(
                     labels_int = lbl_ser.fillna(-1).astype(int)
                     work_df["cluster_label"] = labels_int
 
-                    clause_emb_source = semantic_clause_embs if semantic_clause_embs is not None else embeddings
+                    clause_emb_source = semantic_clause_embs
                     clause_embs = _normalize_rows(np.asarray(clause_emb_source, dtype=np.float32))
 
                     logging.info("[REFINE] pol=%s | facets=%d | th=%.2f",
@@ -713,7 +712,7 @@ def run_full_pipeline(
 
             clause_frame = apply_facet_routing(
                 clause_frame,
-                clause_embs=semantic_clause_embs if semantic_clause_embs is not None else embeddings,
+                clause_embs=semantic_clause_embs,
                 facets=facets_obj,
                 top_k=int(refine_th.get("top_k_facets", 2)),
                 threshold=float(refine_th.get("facet_threshold", 0.32)),

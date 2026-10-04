@@ -1,0 +1,498 @@
+{
+  "schema_version": 1,
+  "synthetic": true,
+  "provenance": "Newly authored fictional Korean reviews for this software demonstration. No original reviews, community exports, or personal information were used.",
+  "product": "가상의 보온 머그",
+  "disclaimer": "새로 작성한 합성 리뷰만 사용하는 오프라인 기능 데모입니다. 규칙 기반 극성 분류는 학습된 ABSA 모델이 아니며 정확도를 측정하지 않았습니다. 이 결과는 원래의 76.6만 건 분석을 재검증한 결과가 아닙니다.",
+  "methods": {
+    "clause_split": "pipeline.clause_splitter.split_clauses(offline=True): punctuation + connective rules",
+    "polarity": "explicit Korean phrase rules; not trained ABSA; no accuracy claim",
+    "embedding": "character TF-IDF 2–4 grams; corpus-specific cached vectors",
+    "clustering": {
+      "algorithm": "DBSCAN",
+      "metric": "cosine",
+      "eps": 0.68,
+      "min_samples": 2
+    },
+    "representatives": "pipeline.summarizer.extract_representatives: provided vectors + MMR; no model loading"
+  },
+  "summary": {
+    "review_count": 16,
+    "clause_count": 31,
+    "polarity_counts": {
+      "positive": 16,
+      "neutral": 2,
+      "negative": 13
+    },
+    "negative_count": 13,
+    "cluster_count": 3,
+    "clustered_negative_count": 12,
+    "noise_count": 1
+  },
+  "reviews": [
+    {
+      "review_id": "synthetic-001",
+      "review": "색상이 예뻐요 하지만 배송이 너무 늦었어요."
+    },
+    {
+      "review_id": "synthetic-002",
+      "review": "손잡이가 편해요. 배송이 너무 늦어서 아쉬워요."
+    },
+    {
+      "review_id": "synthetic-003",
+      "review": "보온 성능은 좋아요 그러나 배송이 너무 늦었어요."
+    },
+    {
+      "review_id": "synthetic-004",
+      "review": "설명서는 읽기 쉬워요. 배송이 너무 늦게 도착했어요."
+    },
+    {
+      "review_id": "synthetic-005",
+      "review": "머그의 모양이 예뻐요 하지만 포장 상자가 찢어져 왔어요."
+    },
+    {
+      "review_id": "synthetic-006",
+      "review": "색상은 마음에 들어요. 포장 상자가 찢어져 있어서 당황했어요."
+    },
+    {
+      "review_id": "synthetic-007",
+      "review": "용량은 적당해요 다만 포장 상자가 찢어져 왔어요."
+    },
+    {
+      "review_id": "synthetic-008",
+      "review": "손에 잡히는 느낌은 좋아요. 포장 상자가 찢어진 채로 왔어요."
+    },
+    {
+      "review_id": "synthetic-009",
+      "review": "머그가 가벼워서 좋아요 하지만 뚜껑 틈으로 물이 새요."
+    },
+    {
+      "review_id": "synthetic-010",
+      "review": "손잡이 크기는 적당해요. 뚜껑 틈으로 물이 자꾸 새요."
+    },
+    {
+      "review_id": "synthetic-011",
+      "review": "보온 성능은 만족해요 그러나 뚜껑 틈으로 물이 새요."
+    },
+    {
+      "review_id": "synthetic-012",
+      "review": "겉면의 색상이 예뻐요. 뚜껑 틈으로 물이 조금씩 새요."
+    },
+    {
+      "review_id": "synthetic-013",
+      "review": "손잡이가 삐걱거리는 소음이 거슬려요."
+    },
+    {
+      "review_id": "synthetic-014",
+      "review": "보온 성능이 좋아요. 손잡이가 편해요."
+    },
+    {
+      "review_id": "synthetic-015",
+      "review": "색상은 파란색이에요. 용량은 삼백 밀리리터로 표시되어 있어요."
+    },
+    {
+      "review_id": "synthetic-016",
+      "review": "세척이 편해요 그리고 뚜껑을 닫기 쉬워요."
+    }
+  ],
+  "clauses": [
+    {
+      "review_id": "synthetic-001",
+      "clause": "색상이 예뻐요",
+      "clause_source": "segment",
+      "clause_idx": 0,
+      "clause_id": "4561233ab1f75ba09252f90b2ae19aa2e65868b321ad61a99f750c93a8b385f5",
+      "polarity": "positive",
+      "matched_rule": "예뻐",
+      "cluster_label": null,
+      "is_noise": false
+    },
+    {
+      "review_id": "synthetic-001",
+      "clause": "하지만 배송이 너무 늦었어요.",
+      "clause_source": "segment",
+      "clause_idx": 1,
+      "clause_id": "f285cb7a56d2d96ed1f59962f4536f100d9dd975a664b20136c8db022d6a081d",
+      "polarity": "negative",
+      "matched_rule": "늦",
+      "cluster_label": 0,
+      "is_noise": false
+    },
+    {
+      "review_id": "synthetic-002",
+      "clause": "손잡이가 편해요.",
+      "clause_source": "segment",
+      "clause_idx": 0,
+      "clause_id": "859d703774c0c29a52fe16b7bbc2ecc377a36a12ee40df8775abff1b97c06292",
+      "polarity": "positive",
+      "matched_rule": "편해",
+      "cluster_label": null,
+      "is_noise": false
+    },
+    {
+      "review_id": "synthetic-002",
+      "clause": "배송이 너무 늦어서 아쉬워요.",
+      "clause_source": "segment",
+      "clause_idx": 1,
+      "clause_id": "649635ca696085b5b35dda059841e42c4eabde748cdad98faa5ff926d05ea36d",
+      "polarity": "negative",
+      "matched_rule": "늦",
+      "cluster_label": 0,
+      "is_noise": false
+    },
+    {
+      "review_id": "synthetic-003",
+      "clause": "보온 성능은 좋아요",
+      "clause_source": "segment",
+      "clause_idx": 0,
+      "clause_id": "7a7db3976bd2d2cf7e196d769402db4f8c7a6cdb69f55aee6092f77b53734ff4",
+      "polarity": "positive",
+      "matched_rule": "좋아",
+      "cluster_label": null,
+      "is_noise": false
+    },
+    {
+      "review_id": "synthetic-003",
+      "clause": "그러나 배송이 너무 늦었어요.",
+      "clause_source": "segment",
+      "clause_idx": 1,
+      "clause_id": "0b0480224b814df5202c001da31c43828b01444d982aa087374fa164dea86c67",
+      "polarity": "negative",
+      "matched_rule": "늦",
+      "cluster_label": 0,
+      "is_noise": false
+    },
+    {
+      "review_id": "synthetic-004",
+      "clause": "설명서는 읽기 쉬워요.",
+      "clause_source": "segment",
+      "clause_idx": 0,
+      "clause_id": "6238674c93b77f0f06c1d7669944d697dfc3846360aebc78e83ef8ae8b576a2a",
+      "polarity": "positive",
+      "matched_rule": "쉬워",
+      "cluster_label": null,
+      "is_noise": false
+    },
+    {
+      "review_id": "synthetic-004",
+      "clause": "배송이 너무 늦게 도착했어요.",
+      "clause_source": "segment",
+      "clause_idx": 1,
+      "clause_id": "de0d57a4501da96c358b5779d15da62e899608d1f9bb8506c0a892b7ac6a60ce",
+      "polarity": "negative",
+      "matched_rule": "늦",
+      "cluster_label": 0,
+      "is_noise": false
+    },
+    {
+      "review_id": "synthetic-005",
+      "clause": "머그의 모양이 예뻐요",
+      "clause_source": "segment",
+      "clause_idx": 0,
+      "clause_id": "d480102aa6e02ba8913ef1aa65bbc23b383d0ba183cc4ce443afee211101816a",
+      "polarity": "positive",
+      "matched_rule": "예뻐",
+      "cluster_label": null,
+      "is_noise": false
+    },
+    {
+      "review_id": "synthetic-005",
+      "clause": "하지만 포장 상자가 찢어져 왔어요.",
+      "clause_source": "segment",
+      "clause_idx": 1,
+      "clause_id": "01c9153722e2d466fc6529a10fa355487ff756f5adbb45d5d39a7af511eab7d4",
+      "polarity": "negative",
+      "matched_rule": "찢어",
+      "cluster_label": 1,
+      "is_noise": false
+    },
+    {
+      "review_id": "synthetic-006",
+      "clause": "색상은 마음에 들어요.",
+      "clause_source": "segment",
+      "clause_idx": 0,
+      "clause_id": "58bef2a1957d0af4b28a733fc3d6fb90ecba11c4c1c262895a81c8aec18e92d1",
+      "polarity": "positive",
+      "matched_rule": "마음에 들어",
+      "cluster_label": null,
+      "is_noise": false
+    },
+    {
+      "review_id": "synthetic-006",
+      "clause": "포장 상자가 찢어져 있어서 당황했어요.",
+      "clause_source": "segment",
+      "clause_idx": 1,
+      "clause_id": "88eb6aa2ed385dd7c6ebcdf6caff4399dd4610d7e8023155472d416c18c5e565",
+      "polarity": "negative",
+      "matched_rule": "찢어",
+      "cluster_label": 1,
+      "is_noise": false
+    },
+    {
+      "review_id": "synthetic-007",
+      "clause": "용량은 적당해요",
+      "clause_source": "segment",
+      "clause_idx": 0,
+      "clause_id": "e91c0ddf7ba36745d8f8df3ebd793a15bbe1d85ddddfb35206727b02b88b130d",
+      "polarity": "positive",
+      "matched_rule": "적당",
+      "cluster_label": null,
+      "is_noise": false
+    },
+    {
+      "review_id": "synthetic-007",
+      "clause": "다만 포장 상자가 찢어져 왔어요.",
+      "clause_source": "segment",
+      "clause_idx": 1,
+      "clause_id": "fe31c49b2b5a09bbd945b42b126ddf2fba7e9529a08aa414dedd7b666d559537",
+      "polarity": "negative",
+      "matched_rule": "찢어",
+      "cluster_label": 1,
+      "is_noise": false
+    },
+    {
+      "review_id": "synthetic-008",
+      "clause": "손에 잡히는 느낌은 좋아요.",
+      "clause_source": "segment",
+      "clause_idx": 0,
+      "clause_id": "01c199036621335fd11378d7d2e049240ab7bb7f96599fcd05bd641a6fcbc282",
+      "polarity": "positive",
+      "matched_rule": "좋아",
+      "cluster_label": null,
+      "is_noise": false
+    },
+    {
+      "review_id": "synthetic-008",
+      "clause": "포장 상자가 찢어진 채로 왔어요.",
+      "clause_source": "segment",
+      "clause_idx": 1,
+      "clause_id": "da385d90d0dee8e7fe2983076754b3782208eb0bd3f1438bca93eaaffef04f26",
+      "polarity": "negative",
+      "matched_rule": "찢어",
+      "cluster_label": 1,
+      "is_noise": false
+    },
+    {
+      "review_id": "synthetic-009",
+      "clause": "머그가 가벼워서 좋아요",
+      "clause_source": "segment",
+      "clause_idx": 0,
+      "clause_id": "b794c154cd8bdb126579797797e89f5817fe5aec9679bf3d205b288184fcdbac",
+      "polarity": "positive",
+      "matched_rule": "좋아",
+      "cluster_label": null,
+      "is_noise": false
+    },
+    {
+      "review_id": "synthetic-009",
+      "clause": "하지만 뚜껑 틈으로 물이 새요.",
+      "clause_source": "segment",
+      "clause_idx": 1,
+      "clause_id": "0c89ade384000e3b3ecef8eff14de7853a5b2ea4b915c7740a9087ff9d10e080",
+      "polarity": "negative",
+      "matched_rule": "물이 새",
+      "cluster_label": 2,
+      "is_noise": false
+    },
+    {
+      "review_id": "synthetic-010",
+      "clause": "손잡이 크기는 적당해요.",
+      "clause_source": "segment",
+      "clause_idx": 0,
+      "clause_id": "b3507bef9a99b302b713edd520fe70ed328dc76cb6083f7b5835e927fea8ae8b",
+      "polarity": "positive",
+      "matched_rule": "적당",
+      "cluster_label": null,
+      "is_noise": false
+    },
+    {
+      "review_id": "synthetic-010",
+      "clause": "뚜껑 틈으로 물이 자꾸 새요.",
+      "clause_source": "segment",
+      "clause_idx": 1,
+      "clause_id": "c3c0311b8aed239b8d3865d5487980948eb73e4e5b75523228aa156ea0055c64",
+      "polarity": "negative",
+      "matched_rule": "물이 자꾸 새",
+      "cluster_label": 2,
+      "is_noise": false
+    },
+    {
+      "review_id": "synthetic-011",
+      "clause": "보온 성능은 만족해요",
+      "clause_source": "segment",
+      "clause_idx": 0,
+      "clause_id": "4e55e89ddc103d583cdc0a1a08a0a235f139c883ec21ec4cda23ac00ae71213d",
+      "polarity": "positive",
+      "matched_rule": "만족",
+      "cluster_label": null,
+      "is_noise": false
+    },
+    {
+      "review_id": "synthetic-011",
+      "clause": "그러나 뚜껑 틈으로 물이 새요.",
+      "clause_source": "segment",
+      "clause_idx": 1,
+      "clause_id": "a479850cd6756e7f3f7f4634b4d31a99bd1ddb37272c49ea7fc4ba0464d671ae",
+      "polarity": "negative",
+      "matched_rule": "물이 새",
+      "cluster_label": 2,
+      "is_noise": false
+    },
+    {
+      "review_id": "synthetic-012",
+      "clause": "겉면의 색상이 예뻐요.",
+      "clause_source": "segment",
+      "clause_idx": 0,
+      "clause_id": "94c8144068e883cc9ebd1e43c4e42c77f9619bf9b38b8442603ab9e35b7668d4",
+      "polarity": "positive",
+      "matched_rule": "예뻐",
+      "cluster_label": null,
+      "is_noise": false
+    },
+    {
+      "review_id": "synthetic-012",
+      "clause": "뚜껑 틈으로 물이 조금씩 새요.",
+      "clause_source": "segment",
+      "clause_idx": 1,
+      "clause_id": "befbf0e4db53d42e2ec37d282e01bff1efc163d52043cc746d7092d8c6af409c",
+      "polarity": "negative",
+      "matched_rule": "물이 조금씩 새",
+      "cluster_label": 2,
+      "is_noise": false
+    },
+    {
+      "review_id": "synthetic-013",
+      "clause": "손잡이가 삐걱거리는 소음이 거슬려요.",
+      "clause_source": "segment",
+      "clause_idx": 0,
+      "clause_id": "50e97164d51f761bd2bae4553d569825952dbb1875d540528faf75015c861b3c",
+      "polarity": "negative",
+      "matched_rule": "삐걱",
+      "cluster_label": -1,
+      "is_noise": true
+    },
+    {
+      "review_id": "synthetic-014",
+      "clause": "보온 성능이 좋아요.",
+      "clause_source": "segment",
+      "clause_idx": 0,
+      "clause_id": "59281e61087849191de69240ba2a27f57c58d25c8813111cccc65b859d449eea",
+      "polarity": "positive",
+      "matched_rule": "좋아",
+      "cluster_label": null,
+      "is_noise": false
+    },
+    {
+      "review_id": "synthetic-014",
+      "clause": "손잡이가 편해요.",
+      "clause_source": "segment",
+      "clause_idx": 1,
+      "clause_id": "6217d6cc2986d6d2a194aeaa1f9e87cc05d15a42bf583277b0377e8841f18dad",
+      "polarity": "positive",
+      "matched_rule": "편해",
+      "cluster_label": null,
+      "is_noise": false
+    },
+    {
+      "review_id": "synthetic-015",
+      "clause": "색상은 파란색이에요.",
+      "clause_source": "segment",
+      "clause_idx": 0,
+      "clause_id": "63d0eb7ab4ff4b9678100a5c2f0558221a35eb28848cb1e181c2caa961f7c7ea",
+      "polarity": "neutral",
+      "matched_rule": "일치하는 규칙 없음",
+      "cluster_label": null,
+      "is_noise": false
+    },
+    {
+      "review_id": "synthetic-015",
+      "clause": "용량은 삼백 밀리리터로 표시되어 있어요.",
+      "clause_source": "segment",
+      "clause_idx": 1,
+      "clause_id": "e1f4b220d90a4c4787a6313165ef7fa556219e64ad7c75eed7271775aa097111",
+      "polarity": "neutral",
+      "matched_rule": "일치하는 규칙 없음",
+      "cluster_label": null,
+      "is_noise": false
+    },
+    {
+      "review_id": "synthetic-016",
+      "clause": "세척이 편해요",
+      "clause_source": "segment",
+      "clause_idx": 0,
+      "clause_id": "155fd8eb8375501e857f0e06cff8aabb0d1183232a511da8ff9d8f7c15558fc6",
+      "polarity": "positive",
+      "matched_rule": "편해",
+      "cluster_label": null,
+      "is_noise": false
+    },
+    {
+      "review_id": "synthetic-016",
+      "clause": "그리고 뚜껑을 닫기 쉬워요.",
+      "clause_source": "segment",
+      "clause_idx": 1,
+      "clause_id": "374268ce5efe86c2306e990999c503c392a7be69f400a1b0cbb8fa3f2367508a",
+      "polarity": "positive",
+      "matched_rule": "쉬워",
+      "cluster_label": null,
+      "is_noise": false
+    }
+  ],
+  "clusters": [
+    {
+      "cluster_id": 0,
+      "count": 4,
+      "representatives": [
+        "하지만 배송이 너무 늦었어요.",
+        "배송이 너무 늦게 도착했어요."
+      ],
+      "clause_ids": [
+        "f285cb7a56d2d96ed1f59962f4536f100d9dd975a664b20136c8db022d6a081d",
+        "649635ca696085b5b35dda059841e42c4eabde748cdad98faa5ff926d05ea36d",
+        "0b0480224b814df5202c001da31c43828b01444d982aa087374fa164dea86c67",
+        "de0d57a4501da96c358b5779d15da62e899608d1f9bb8506c0a892b7ac6a60ce"
+      ]
+    },
+    {
+      "cluster_id": 1,
+      "count": 4,
+      "representatives": [
+        "다만 포장 상자가 찢어져 왔어요.",
+        "포장 상자가 찢어진 채로 왔어요."
+      ],
+      "clause_ids": [
+        "01c9153722e2d466fc6529a10fa355487ff756f5adbb45d5d39a7af511eab7d4",
+        "88eb6aa2ed385dd7c6ebcdf6caff4399dd4610d7e8023155472d416c18c5e565",
+        "fe31c49b2b5a09bbd945b42b126ddf2fba7e9529a08aa414dedd7b666d559537",
+        "da385d90d0dee8e7fe2983076754b3782208eb0bd3f1438bca93eaaffef04f26"
+      ]
+    },
+    {
+      "cluster_id": 2,
+      "count": 4,
+      "representatives": [
+        "하지만 뚜껑 틈으로 물이 새요.",
+        "뚜껑 틈으로 물이 자꾸 새요."
+      ],
+      "clause_ids": [
+        "0c89ade384000e3b3ecef8eff14de7853a5b2ea4b915c7740a9087ff9d10e080",
+        "c3c0311b8aed239b8d3865d5487980948eb73e4e5b75523228aa156ea0055c64",
+        "a479850cd6756e7f3f7f4634b4d31a99bd1ddb37272c49ea7fc4ba0464d671ae",
+        "befbf0e4db53d42e2ec37d282e01bff1efc163d52043cc746d7092d8c6af409c"
+      ]
+    }
+  ],
+  "noise": [
+    {
+      "review_id": "synthetic-013",
+      "clause": "손잡이가 삐걱거리는 소음이 거슬려요.",
+      "clause_source": "segment",
+      "clause_idx": 0,
+      "clause_id": "50e97164d51f761bd2bae4553d569825952dbb1875d540528faf75015c861b3c",
+      "polarity": "negative",
+      "matched_rule": "삐걱",
+      "cluster_label": -1,
+      "is_noise": true
+    }
+  ]
+}

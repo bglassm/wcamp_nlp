@@ -1,0 +1,7 @@
+REPRODUCED: original cache returns negative clause vector for positive clause sharing reset ID
+REPRODUCED: duplicate input IDs produce 4 vectors for 2 rows via many-to-many merge
+REPRODUCED: scalar Negative decodes as n; main treats n as unknown and neutralizes it
+REPRODUCED: original count reports 2 clusters for one real cluster plus other noise
+REPRODUCED: original report includes offset noise 999 in cluster summary counts
+REPRODUCED: original persistent IDs collide across polarities for identical representatives
+REPRODUCED: original persistent allocator gives only 998 unique IDs to 999 clusters

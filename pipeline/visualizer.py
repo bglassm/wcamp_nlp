@@ -25,6 +25,7 @@ from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
+from pipeline.contracts import cluster_counts, is_noise_label
 
 logger = logging.getLogger(__name__)
 
@@ -268,7 +269,7 @@ def _save_keyword_bar(
 
     # pick top_n_clusters by size, exclude noise
     sorted_cids = sorted(
-        [c for c in kw if cnt_map.get(c, 0) > 0 and c not in (-1, 999, 1999, 2999)],
+        [c for c in kw if cnt_map.get(c, 0) > 0 and not is_noise_label(c)],
         key=lambda c: cnt_map.get(c, 0),
         reverse=True,
     )[:top_n_clusters]
@@ -337,7 +338,7 @@ def _build_html_dashboard(
     total_clauses = len(clause_df)
     total_reviews = len(raw_df)
     n_clusters = int(
-        clause_df["cluster_label"].nunique() if "cluster_label" in clause_df.columns else 0
+        cluster_counts(clause_df["cluster_label"])["n_clusters"] if "cluster_label" in clause_df.columns else 0
     )
 
     def _pct(k):
@@ -354,7 +355,7 @@ def _build_html_dashboard(
                 cid_int = int(cid)
             except Exception:
                 continue
-            if cid_int in (-1, 999, 1999, 2999):
+            if is_noise_label(cid_int):
                 continue
             pol = grp["polarity"].mode().iloc[0] if not grp.empty else "neutral"
             pol_ko = _POLARITY_LABELS_KO.get(pol, pol)

@@ -1,49 +1,56 @@
-# pipeline/idmap.py
+"""Persistent cluster IDs within the legacy three polarity namespaces."""
 from __future__ import annotations
 from pathlib import Path
-import json, hashlib
+import hashlib
+import json
+import logging
+import tempfile
 from typing import Dict, Tuple
 import pandas as pd
 
-
-STATE_VERSION = 1
-
-
-DEF_STATE = {
-"version": STATE_VERSION,
-"counters": {"0": 1000, "1": 1000, "2": 1000}, # start per polarity namespace
-"sig2id": {}, # signature -> stable_id
-}
+STATE_VERSION = 2
+DEF_STATE = {"version": STATE_VERSION, "counters": {"0": -1, "1": -1, "2": -1}, "sig2id": {}}
+logger = logging.getLogger(__name__)
 
 
 def _load_state(path: Path) -> dict:
     if path.exists():
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                st = json.load(f)
-            if st.get("version") == STATE_VERSION:
-                return st
-        except Exception:
-            pass
+        state = json.loads(path.read_text(encoding="utf-8"))
+        if state.get("version") == STATE_VERSION:
+            values = list(state["sig2id"].values())
+            if len(values) != len(set(values)):
+                raise ValueError("Stable-ID state contains duplicate IDs")
+            for signature, value in state["sig2id"].items():
+                if not isinstance(value, int) or value < 0 or value >= 3000 or value % 1000 == 999:
+                    raise ValueError("Stable-ID state contains invalid IDs")
+                if not signature.startswith(f"{value // 1000}:"):
+                    raise ValueError("Stable-ID state has a polarity mismatch")
+            return state
+        logger.warning("Invalidating legacy stable-ID state: v1 signatures/allocations may collide")
     return json.loads(json.dumps(DEF_STATE))
 
-def _save_state(path: Path, st: dict) -> None:
+
+def _save_state(path: Path, state: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(st, f, ensure_ascii=False, indent=2)
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as handle:
+        temporary = Path(handle.name)
+        json.dump(state, handle, ensure_ascii=False, indent=2)
+    try:
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
 
 def _pol_prefix(cid: int) -> int:
-    try:
-        return max(0, min(2, int(cid) // 1000))
-    except Exception:
-        return 0
+    if not 0 <= cid < 3000:
+        raise ValueError("Cluster ID is outside the legacy polarity namespaces")
+    return cid // 1000
+
 
 def _signature_for_cluster(cid: int, reps: Dict[int, list]) -> str:
-    txt = " ".join(reps.get(int(cid), [])[:3]).strip().lower()
-    if not txt:
-        txt = f"cluster:{cid}"
-    h = hashlib.sha1(txt.encode("utf-8")).hexdigest()
-    return h[:16] # 64‑bit hex
+    text = " ".join(reps.get(cid, [])[:3]).strip().lower() or f"cluster:{cid}"
+    return f"{_pol_prefix(cid)}:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
 
 def assign_stable_ids(
     clauses_df: pd.DataFrame,
@@ -52,46 +59,41 @@ def assign_stable_ids(
     state_path: Path,
     prefer_col: str = "refined_cluster_id",
 ) -> Tuple[pd.DataFrame, Dict[str, int]]:
-    """Attach `stable_cluster_id` based on persisted signature→id mapping.
-    - prefer_col: use refined ids if present; else fallback to `cluster_label`.
-    - skips "other" bins (x999) by reusing the same id.
-    - persists state per input file at `state_path` (e.g., output/<YYYYMMDD>/<stem>/_stable_ids.json).
+    """Persist polarity-scoped IDs; never wrap into an existing ID or noise bucket.
+
+    Each polarity has 999 IDs (0..998 plus its offset). Exhaustion raises before
+    writing any state. A legacy v1 state is explicitly invalidated with a warning.
+    Representative signatures are a heuristic; changed wording can create a new ID.
     """
-    df = clauses_df.copy()
-    col = prefer_col if prefer_col in df.columns else "cluster_label"
-
-
-    st = _load_state(state_path)
-    sig2id = st["sig2id"]
-    counters = st["counters"]
-
-
-    stable_map: Dict[int, int] = {}
-    for cid in sorted(set(map(int, df[col].unique()))):
+    frame = clauses_df.copy()
+    column = prefer_col if prefer_col in frame.columns else "cluster_label"
+    raw_ids = pd.to_numeric(frame[column], errors="raise")
+    if raw_ids.isna().any() or ((raw_ids % 1) != 0).any():
+        raise ValueError("Cluster IDs must be finite integers")
+    ids = raw_ids.astype(int)
+    state = _load_state(Path(state_path))
+    signatures = state["sig2id"]
+    used = set(signatures.values())
+    stable_map = {}
+    for cid in sorted(ids.unique()):
+        cid = int(cid)
+        if cid == -1:
+            stable_map[cid] = cid
+            continue
+        polarity = _pol_prefix(cid)
         if cid % 1000 == 999:
             stable_map[cid] = cid
             continue
-        sig = _signature_for_cluster(cid, reps)
-        if sig in sig2id:
-            stable_map[cid] = int(sig2id[sig])
-        else:
-            p = str(_pol_prefix(cid))
-            nxt = int(counters.get(p, 1000)) + 1
-            counters[p] = nxt
-            stable_id = int(p) * 1000 + (nxt % 1000) # stays in 0xxx/1xxx/2xxx space
-            # avoid accidental 999
-            if stable_id % 1000 == 999:
-                stable_id -= 1
-            sig2id[sig] = stable_id
-            stable_map[cid] = stable_id
-
-
-    df["stable_cluster_id"] = df[col].map(stable_map)
-
-
-    st["sig2id"] = sig2id
-    st["counters"] = counters
-    _save_state(state_path, st)
-
-
-    return df, {str(k): int(v) for k, v in stable_map.items()}
+        signature = _signature_for_cluster(cid, reps)
+        if signature not in signatures:
+            base = polarity * 1000
+            available = next((base + offset for offset in range(999) if base + offset not in used), None)
+            if available is None:
+                raise ValueError(f"Stable-ID capacity exhausted for polarity {polarity}; namespace redesign required")
+            signatures[signature] = available
+            used.add(available)
+            state["counters"][str(polarity)] = available - base
+        stable_map[cid] = signatures[signature]
+    frame["stable_cluster_id"] = ids.map(stable_map)
+    _save_state(Path(state_path), state)
+    return frame, {str(key): int(value) for key, value in stable_map.items()}

@@ -1,3 +1,4 @@
+from __future__ import annotations
 import logging
 from pathlib import Path
 from typing import Tuple, Optional
@@ -5,6 +6,7 @@ from typing import Tuple, Optional
 import numpy as np
 import pandas as pd
 import config
+from pipeline.contracts import is_noise_label
 
 from sklearn.metrics import silhouette_score
 
@@ -13,12 +15,6 @@ try:
 except ImportError:
     plt = None
 
-try:
-    import hdbscan
-except ImportError as e:
-    raise ImportError(
-        "`hdbscan` is not installed. Run: pip install hdbscan"
-    ) from e
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -52,6 +48,8 @@ def cluster_embeddings(
         cluster_selection_epsilon,
     )
 
+    import hdbscan
+
     clusterer = hdbscan.HDBSCAN(
         min_cluster_size=min_cluster_size,
         min_samples=min_samples,
@@ -69,12 +67,9 @@ def cluster_embeddings(
             dtype=object,
         )
 
-    n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
-    n_noise = (
-        int((labels == config.OUTLIER_LABEL).sum())
-        if config.HANDLE_OUTLIERS
-        else int((clusterer.labels_ == -1).sum())
-    )
+    # Count the raw labels before display replacement ('other' is not a cluster).
+    n_clusters = len(set(clusterer.labels_) - {-1})
+    n_noise = int((clusterer.labels_ == -1).sum())
 
     logger.info(
         "[HDBSCAN] done: %d clusters, %d noise points (label=%s)",
@@ -107,20 +102,20 @@ def evaluate_clusters(
     if output_dir and timestamp:
         try:
             df_dist = pd.DataFrame({"cluster_label": uniq, "count": counts})
-            dist_path = Path(output_dir) / f"cluster_distribution_{timestamp}.csv"
+            dist_path = Path(output_dir) / f"cluster_distribution_{tag + '_' if tag else ''}{timestamp}.csv"
             df_dist.to_csv(dist_path, index=False, encoding="utf-8-sig")
         except Exception:
             lg.exception("[CLUSTER] failed to save cluster_distribution CSV")
 
     # silhouette: exclude noise/other labels
-    exclude = {"-1", "other"}
-    mask = np.array([s.lower() not in exclude for s in labels_str], dtype=bool)
+    noise_display = str(getattr(config, "OUTLIER_LABEL", "other")).lower()
+    mask = np.array([not is_noise_label(s) and s.lower() != noise_display for s in labels_str], dtype=bool)
 
     valid_n = int(mask.sum())
     valid_labels = np.unique(labels_str[mask]) if valid_n > 0 else np.array([])
     n_valid_labels = len(valid_labels)
 
-    if valid_n >= 2 and n_valid_labels >= 2:
+    if valid_n > n_valid_labels >= 2:
         try:
             sil_umap = float(silhouette_score(embeddings_2d[mask], labels_str[mask], metric="euclidean"))
         except Exception:
@@ -150,7 +145,7 @@ def evaluate_clusters(
                     "n_noise_or_other": int((~mask).sum()),
                     "n_samples_used": valid_n,
                 }])
-                stats_path = Path(output_dir) / f"cluster_stats_{timestamp}.csv"
+                stats_path = Path(output_dir) / f"cluster_stats_{tag + '_' if tag else ''}{timestamp}.csv"
                 df_stats.to_csv(stats_path, index=False, encoding="utf-8-sig")
             except Exception:
                 lg.exception("[CLUSTER] failed to save cluster_stats CSV")

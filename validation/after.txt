@@ -1,0 +1,24 @@
+Command: bash run_demo.sh
+Fresh Python virtual environment; demo CLI reuses the prior synthetic cache.
+Captured: 2026-10-04T07:56:36.136954+00:00
+
+Synthetic-only verification; no original reviews or external model calls.
+Python 3.11.15
+.......................................................                  [100%]
+55 passed in 41.27s
+Optional stopword file not found: stopwords_ko.txt — using core list only
+INFO synthetic_demo [DEMO] reviews=16 clauses=31 negative=13
+INFO pipeline.embedder [EMBED] cache key: 7f3ecc8eb8c8895a
+INFO pipeline.embedder [EMBED] cache: 16 hit rows, 0 unique misses
+INFO pipeline.embedder [EMBED] final shape: (16, 623)
+INFO pipeline.embedder [EMBED] cache: 2 hit rows, 0 unique misses
+INFO pipeline.embedder [EMBED] final shape: (2, 623)
+INFO pipeline.embedder [EMBED] cache: 13 hit rows, 0 unique misses
+INFO pipeline.embedder [EMBED] final shape: (13, 623)
+INFO pipeline.summarizer [REPS] extracting for 3 clusters (top_k=2, lambda=0.70)
+INFO synthetic_demo [DEMO] cache backend calls=0 embedded_texts=0
+INFO synthetic_demo [DEMO] clusters=3 noise=1
+INFO synthetic_demo [DEMO] wrote <REPO>/artifacts/demo/result.json
+INFO synthetic_demo [DEMO] wrote <REPO>/artifacts/demo/index.html
+{"clause_count": 31, "cluster_count": 3, "clustered_negative_count": 12, "negative_count": 13, "noise_count": 1, "polarity_counts": {"negative": 13, "neutral": 2, "positive": 16}, "review_count": 16}
+새로 작성한 합성 리뷰만 사용하는 오프라인 기능 데모입니다. 규칙 기반 극성 분류는 학습된 ABSA 모델이 아니며 정확도를 측정하지 않았습니다. 이 결과는 원래의 76.6만 건 분석을 재검증한 결과가 아닙니다.

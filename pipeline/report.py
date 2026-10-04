@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 import json
 import config
+from pipeline.contracts import is_noise_label
 
 # Korean stopwords used when building short cluster labels
 DEFAULT_STOPWORDS_KO = [
@@ -147,7 +148,7 @@ def _build_rep_summary_table(
 
     # exclude noise clusters (-1 and 999-class offsets)
     if "cluster_label" in df.columns:
-        df = df[pd.to_numeric(df["cluster_label"], errors="coerce").fillna(-1).astype(int) >= 0]
+        df = df[~df["cluster_label"].map(is_noise_label)]
     if df.empty:
         return pd.DataFrame(columns=["감정", "분류", "대표어", "개수", "대표 문장"])
 

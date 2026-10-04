@@ -89,3 +89,7 @@ ehthumbs.db
 # ── (Optional) keep docs/examples CSV/XLSX even if global patterns ignore them
 !docs/**/*.csv
 !docs/**/*.xlsx
+
+# Synthetic demo runtime output; curated sample results live in examples/
+artifacts/
+validation/latest.txt

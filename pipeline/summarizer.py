@@ -5,6 +5,7 @@ import numpy as np
 
 import config
 from pipeline.embedder import _get_model
+from pipeline.contracts import is_noise_label
 
 logger = logging.getLogger(__name__)
 
@@ -52,15 +53,7 @@ def _get_semantic_embeddings(
     except Exception:  # pragma: no cover - best effort
         target_dim = None
 
-    if (
-        provided_embeddings is not None
-        and provided_embeddings.size
-        and target_dim is not None
-        and provided_embeddings.shape[1] == target_dim
-    ):
-        logger.info("Reusing provided embeddings as semantic helper outputs (dim=%d)", target_dim)
-        return _normalize_embeddings(np.asarray(provided_embeddings))
-
+    # Equal vector width does not prove equal embedding spaces; encode with the helper.
     try:
         return semantic_model.encode(
             texts,
@@ -151,6 +144,8 @@ def extract_representatives(
     embeddings: np.ndarray,
     labels: np.ndarray,
     top_k: int = config.TOP_K_REPRESENTATIVES,
+    *,
+    use_semantic_helper: bool = True,
 ) -> Dict[int, List[str]]:
     """Select diverse representative sentences per cluster using MMR.
 
@@ -171,14 +166,14 @@ def extract_representatives(
     for lbl in labels:
         try:
             li = int(lbl)
-            if li != -1:
+            if not is_noise_label(li):
                 cluster_ids.add(li)
         except (ValueError, TypeError):
             continue
     cluster_ids = sorted(cluster_ids)
     logger.info("[REPS] extracting for %d clusters (top_k=%d, lambda=%.2f)", len(cluster_ids), final_top_k, lambda_mult)
 
-    semantic_model = _load_semantic_helper()
+    semantic_model = _load_semantic_helper() if use_semantic_helper else None
     semantic_embeddings = _get_semantic_embeddings(texts, embeddings, semantic_model)
     active_embeddings = semantic_embeddings if semantic_embeddings is not None else embeddings
     active_embeddings = _normalize_embeddings(np.asarray(active_embeddings)) if active_embeddings is not None else None
